@@ -1,0 +1,1296 @@
+---
+title: "Hazard in Firebaugh"
+author: "Samantha Liu"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: false
+    code_folding: hide
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(tigris)
+library(mapview)
+library(jsonlite)
+library(censusapi)
+library(tidycensus)
+library(StatMatch)
+library(esri2sf)
+
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+```
+```{r block-groups, include = FALSE}
+fresno_cbgs <- 
+  block_groups("CA","Fresno County", cb = T, progress_bar = F) %>% 
+  # filter(GEOID %in% paste0("0601900840", 11:16)) %>%   # Firebaugh block groups
+  st_cast("MULTIPOLYGON") %>% 
+  st_cast("POLYGON")
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = fresno_cbgs,
+    color = "#e851a2",
+    fillOpacity = 0.5,
+    weight=1,
+    label = ~GEOID
+  )
+
+```
+```{r tracts, include = FALSE}
+fresno_tracts <- 
+  tracts("CA","Fresno County", cb = T, progress_bar = F) %>% 
+  # filter(GEOID == "06019008401") %>%   # Firebaugh tract
+  st_cast("MULTIPOLYGON") %>% 
+  st_cast("POLYGON")
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = fresno_tracts,
+    color = "#e851a2",
+    fillOpacity = 0.5,
+    weight=1,
+    label = ~GEOID
+  )
+```
+
+Building Data obtained from [Geofabrik](http://download.geofabrik.de/) makes many components of OSM available for easy download. After clicking a few levels down, you can find a [NorCal](http://download.geofabrik.de/north-america/us/california/norcal.html) page with a 700MB file for download with [these attributes](http://download.geofabrik.de/osm-data-in-gis-formats-free.pdf). Another option is Microsoft’s AI-generated [building footprints](https://github.com/Microsoft/USBuildingFootprints), which may be more or less accurate than OSM in different places. Their GitHub repo includes links to download the files as GeoJSONs by state, but California is massive, so a nice option is to use [county-level disaggregations](https://drive.google.com/drive/folders/1-XGvS25tQKKQ3HTqWjAfLJ4PaeXJ9yyY) done by [Patty Frontiera](https://dlab.berkeley.edu/blog/leave-only-footprints) at Berkeley. 
+```{r building-parcel, include = FALSE}
+fresno_parcels <- st_read("geographies/Fresno_Parcels_FeaturesToJSO.geojson")
+fb_parcels <- 
+  fresno_parcels %>% 
+  filter(APN %in% paste0("007140", c("13ST", "04ST", "06T", "07ST"))) %>% 
+  st_transform(4326)
+
+# Microsoft AI-generating method
+fresno_osm_bldg <- read_csv("data-raw/ca_06019_footprints.csv")
+fb_osm_bldg <- 
+  fresno_osm_bldg %>%
+  st_as_sf(wkt = "WKT") %>%
+  st_set_crs(4326) %>%
+  rename(geometry = WKT) %>%
+  .[fb_parcels, ] %>%
+  rowid_to_column("ID") %>%
+  filter(
+    !ID %in% c(100, 78, 30, 23, 102, 27, 95, 89, 46, 94, 41, 67, 68, 61, 114, 7, 35, 86)
+  )
+```
+
+```{r archive-building-parcel, include = FALSE, eval = FALSE}
+# osm_bldg <- st_read("G:/Shared drives/SFBI/Data Library/OSM/gis_osm_buildings_a_free_1.shp")
+# saveRDS(osm_bldg, "rds/osm_bldg.rds")
+
+# Geofabrik method
+osm_bldg <- readRDS("rds/osm_bldg.rds")
+fb_osm_bldg <- 
+  osm_bldg %>% 
+  st_transform(st_crs(fresno_cbgs)) %>% 
+  .[fresno_cbgs %>% filter(GEOID == "060190084011"),  ] 
+
+temp <- tempfile()
+download.file("https://www.co.fresno.ca.us/home/showpublisheddocument?id=12993", destfile = temp, mode = "wb")
+fresno_parcels <- st_read(unzip(temp, "Fresno_Parcels.shp"))
+unlink(temp)
+```
+
+## Hazard Data
+Data Sources: [Cal Adapt](https://cal-adapt.org/)
+```{r test-case}
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+test_cbg <- 
+  fresno_cbgs %>% 
+  filter(GEOID == "060190084011") %>%
+  pull(geometry) %>% 
+  st_transform(projection) %>% 
+  st_simplify(
+    dTolerance = ifelse(
+      npts(fresno_cbgs[1, ]$geometry) > 100,
+      400,
+      0
+    )
+  ) %>% 
+  st_transform(4326) %>% 
+  st_as_text() %>% 
+  str_replace_all(" ", "+")
+
+test_exheat <- 
+  fromJSON(
+    paste0(
+      "https://api.cal-adapt.org/api/series/tasmax_day_CanESM2_rcp85/exheat/?g=",
+      test_cbg,
+      "&stat=mean"
+    )
+  ) %>% 
+  .$counts %>% 
+  unlist() %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  rename(
+    year = rowname,
+    exheat = "."
+  ) %>% 
+  mutate(
+    year = substr(year, 1, 10) %>% as.Date()
+  )
+
+test_exheat %>% 
+  ggplot(
+    aes(
+      x = year,
+      y = exheat
+    )
+  ) +
+  geom_line() +
+  labs(
+    x = "Year",
+    y = "Extreme heat days",
+    title = "CBG: 060190084011"
+  )
+```
+
+Row numbers that result in a lexicon error: 46, 62, 108, 109, 134, 220
+```{r}
+exheat_full <- NULL
+
+for(row in 1:nrow(fresno_cbgs)) {
+  
+  print(row)
+  
+  if(row %in% c(46, 62, 108, 109, 134, 220)) { 
+    next 
+  }
+  
+  temp <- 
+    fromJSON(
+      paste0(
+        "https://api.cal-adapt.org/api/series/tasmax_day_CanESM2_rcp85/exheat/?g=",
+        fresno_cbgs[row, ]$geometry %>%
+          st_transform(projection) %>% 
+          st_simplify(
+            dTolerance = ifelse(
+              npts(fresno_cbgs[row, ]$geometry) > 100,
+              400,
+              0
+            )
+          ) %>% 
+          st_transform(4326) %>%
+          st_as_text() %>% 
+          str_replace_all(" ", "+"),
+        "&stat=mean"
+      )
+    ) %>% 
+    .$counts %>% 
+    unlist() %>% 
+    as.data.frame() %>% 
+    rownames_to_column() %>% 
+    rename(
+      year = rowname,
+      exheat = "."
+    ) %>% 
+    mutate(
+      year = substr(year, 1, 10) %>% as.Date(),
+      cbg = fresno_cbgs[row, ]$GEOID,
+      tract = str_sub(cbg, 1, -2)
+    )
+
+  exheat_full <-
+    exheat_full %>% 
+    rbind(temp)
+  
+  if(row%%10 == 0) {
+    print(row)
+    saveRDS(exheat_full, "rds/exheat_full.rds")
+  }
+  
+}
+
+saveRDS(exheat_full, "rds/exheat_full.rds")
+```
+
+```{r}
+exheat_full <- readRDS("rds/exheat_full.rds")
+
+exheat_full %>% 
+  group_by(year) %>% 
+  summarize(
+    exheat_mean = mean(exheat, na.rm = T),
+    exheat_sd = sd(exheat, na.rm = T)
+  ) %>%
+  ggplot(
+    aes(
+      x = year
+    )
+  ) +
+  geom_ribbon(
+    aes(
+      ymin = exheat_mean - exheat_sd,
+      ymax = exheat_mean + exheat_sd
+    ),
+    fill = "grey"
+  ) +
+  geom_line(
+    aes(
+      y = exheat_mean
+    )
+  ) +
+  labs(
+    x = "Year",
+    y = "Extreme heat days",
+    title = "Fresno County CBGs"
+  )
+```
+
+```{r}
+exheat_2020s <- 
+  exheat_full %>% 
+  filter(year >= "2020-01-01" & year <= "2029-12-31") %>% 
+  group_by(cbg) %>% 
+  summarize(exheat = mean(exheat, na.rm = T)) %>% 
+  left_join(fresno_cbgs %>% dplyr::select(cbg = GEOID)) %>% 
+  st_as_sf()
+
+heat_pal <- colorNumeric(
+  palette = "Reds",
+  domain = exheat_2020s$exheat
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = exheat_2020s,
+    fillColor = ~heat_pal(exheat),
+    fillOpacity = 0.5,
+    color = "white",
+    weight = 0.5,
+    label = ~paste0(cbg, ": ", exheat, " extreme heat days per year over the next decade"),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = exheat_2020s,
+    pal = heat_pal,
+    values = ~exheat,
+    title = "Extreme heat days<br>per year over<br>next decade"
+  )
+```
+
+## Exposure Data
+Equity Analys on Heat Exposure - Assumes extreme heat affects everyone in a given census tract the same way
+
+```{r}
+bg_income <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*",
+    regionin = "state:06+county:019",
+    vars = "group(B19001)"
+  ) %>% 
+  mutate(cbg = paste0(state, county, tract, block_group)) %>% 
+  select(
+    !c(GEO_ID, state, county, tract, block_group, NAME) & 
+      !ends_with(c("EA", "MA", "M"))
+  ) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs5_vars %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(income)) %>% 
+  mutate(
+    income = case_when(
+      income %in% c("Less than $10,000","$10,000 to $14,999","$15,000 to $19,999","$20,000 to $24,999") ~ "Less than $25,000",
+      income %in% c("$25,000 to $29,999","$30,000 to $34,999","$35,000 to $39,999","$40,000 to $44,999","$45,000 to $49,999") ~ "$25,000 to $49,999",
+      income %in% c("$50,000 to $59,999","$60,000 to $74,999") ~ "$50,000 to $74,999",
+      TRUE ~ income
+    )
+  ) %>% 
+  group_by(cbg, income) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE))
+
+```
+
+Extreme Heat Day buckets 250-300 should be lumped with 225-250 because of how small the total number of households they affect
+```{r}
+heat_exp_income <-
+  bg_income %>% 
+  left_join(
+    exheat_full %>% 
+      filter(year >= "2020-01-01" & year <= "2029-12-31") %>% 
+      group_by(cbg) %>%
+      summarize(exheat = sum(exheat)),
+    by = c("cbg")
+  ) %>% 
+  filter(!is.na(exheat)) %>% 
+  mutate(
+    exheat_tier =
+      case_when(
+        exheat < 175 ~ "150-175",
+        exheat < 200 ~ "175-200",
+        exheat < 225 ~ "200-225",
+        # exheat < 250 ~ "225-250",
+        # exheat < 275 ~ "250-275",
+        TRUE ~ "225-300"
+      ) 
+  ) %>% 
+  group_by(income, exheat_tier) %>% 
+  summarize(estimate = sum(estimate, na.rm = T)) %>% 
+  mutate(
+    income = income %>% factor(levels = rev(c("Less than $25,000", "$25,000 to $49,999", "$50,000 to $74,999", "$75,000 to $99,999", "$100,000 to $124,999", "$125,000 to $149,999", "$150,000 to $199,999", "$200,000 or more")))
+  )
+```
+
+```{r}
+heat_exp_income_stacked <-
+  heat_exp_income %>% 
+  rbind(
+    heat_exp_income %>%
+      group_by(income) %>%
+      summarize(estimate = sum(estimate)) %>%
+      mutate(exheat_tier = "Total")
+  ) %>%
+  ggplot() +
+  geom_bar(
+    aes(
+      x = exheat_tier %>% factor(levels = c("150-175", "175-200", "200-225", "225-300", "Total")),
+      y = estimate,
+      fill = income
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Days of Extreme Heat",
+    y = "Number of households",
+    title = "Extreme Heat Day Exposure by Income",
+    subtitle = "Fresno County - cumulated over 10 years",
+    fill = "Household Income"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r}
+heat_exp_income_fill <-
+  heat_exp_income %>% 
+  rbind(
+    heat_exp_income %>%
+      group_by(income) %>%
+      summarize(estimate = sum(estimate)) %>%
+      mutate(exheat_tier = "Total")
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = exheat_tier %>% factor(levels = c("150-175", "175-200", "200-225", "225-300", "Total")),
+      y = estimate,
+      fill = income
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Days of Extreme Heat",
+    y = "Number of households",
+    title = "Extreme Heat Day Exposure by Income",
+    subtitle = "Fresno County - cumulated over 10 years",
+    fill = "Household Income"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+## Difference-in-Difference
+```{r, eval = FALSE, inclue = FALSE}
+bay_pumas <- readRDS("geographies/bay_pumas.rds")
+
+pums_transit <- 
+  2015:2017 %>% 
+  map_dfr(function(year){
+    get_pums(
+      variables = c(
+        "PUMA",
+        "JWTR"
+      ),
+      state = "CA",
+      year = year,
+      survey = "acs1",
+      recode = F
+    ) %>% 
+      mutate(
+        bart = ifelse(
+          JWTR %in% c("4","04"),
+          PWGTP,
+          0
+        ),
+        PUMA = PUMA %>% str_pad(5,"left","0")
+      ) %>% 
+      group_by(PUMA) %>% 
+      summarize(
+        pop = sum(PWGTP),
+        bart = sum(bart),
+        year = year
+      )
+  })
+
+pums_transit_clean <-
+  pums_transit %>% 
+  select(-pop) %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = bart
+  ) %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+
+```{r, eval = FALSE, inclue = FALSE}
+obs_matrix <-
+  pums_transit_clean %>% 
+  select(`2015`,`2016`) %>% 
+  as.matrix()
+
+dist_matrix <- mahalanobis.dist(obs_matrix)
+
+rownames(dist_matrix) <- pums_transit_clean$PUMA
+colnames(dist_matrix) <- pums_transit_clean$PUMA
+
+match <- 
+  dist_matrix["08504", ] %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  rename(
+    PUMA = rowname,
+    match = "."
+  ) %>% 
+  right_join(
+    pums_transit_clean
+  ) %>% 
+  arrange(match) %>% 
+  .[1:11, ] %>% 
+  left_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+  st_as_sf()
+
+leaflet() %>% 
+  addTiles() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = match[1, ],
+    color = "red",
+    label = ~PUMA
+  ) %>% 
+  addPolygons(
+    data = match[-1, ],
+    label = ~PUMA
+  )
+```
+
+```{r, eval = FALSE, inclue = FALSE}
+match_pumas <-
+  match[-1,] %>% 
+  st_set_geometry(NULL) %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  ) %>%
+  group_by(
+    year
+  ) %>% 
+  summarize(
+    bart = mean(bart),
+    PUMA = "Similar PUMAs"
+  )
+
+treatment_puma <-
+  match[1,] %>% 
+  select(-match) %>% 
+  st_set_geometry(NULL) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  )
+
+rbind(
+  treatment_puma,
+  match_pumas
+) %>% 
+  mutate(
+    year = year %>% paste0(.,"-01-01") %>%  as.Date()
+  ) %>% 
+  ggplot(
+    aes(
+      x = year,
+      y = bart,
+      color = PUMA
+    )
+  ) +
+  geom_line() +
+  geom_vline(xintercept = 2017, linetype = "dashed") +
+  labs(
+    title = "Milpitas vs. control neighborhoods, BART ridership",
+    x = "Year",
+    y = "BART commute riders"
+  )
+```
+
+```{r, eval = FALSE, inclue = FALSE}
+transit_did <-
+  match %>% 
+  st_set_geometry(NULL) %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  ) %>% 
+  mutate(
+    year = year %>% as.numeric(),
+    time = ifelse(year == 2017, 1, 0),
+    treated = ifelse(PUMA == "08504", 1, 0)
+  )
+
+did_reg <- lm(bart ~ treated*time, data = transit_did)
+
+summary(did_reg)
+```
+
+## ACS Demographics
+```{r ACS-functions}
+acs5_vars <- readRDS("rds/acs5_vars.rds")
+
+get_census_bg <- function(group) {
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*",
+    regionin = "state:06+county:019",
+    vars = paste0("group(", group, ")")
+  ) %>% 
+    mutate(block_group = paste0(state, county, tract, block_group)) %>% 
+    select(
+      !c(GEO_ID, state, county, tract, NAME) & 
+        !ends_with(c("EA", "MA", "M"))
+    ) %>%
+    pivot_longer(
+      ends_with("E"),
+      names_to = "variable",
+      values_to = "estimate"
+    ) %>%
+    left_join(
+      acs5_vars %>% 
+        select(name, label), 
+      by = c("variable" = "name")
+    ) %>% 
+    select(-variable) %>% 
+    filter(block_group == "060190084011")
+}
+
+get_census_tract <- function(group) {
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "tract:*",
+    regionin = "state:06+county:019",
+    vars = paste0("group(", group, ")")
+  ) %>% 
+  mutate(tract = paste0(state, county, tract)) %>%
+  select(
+    !c(GEO_ID, state, county, NAME) & 
+      !ends_with(c("EA", "MA", "M"))
+  ) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs5_vars %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+    filter(tract == "06019008401")
+}
+
+```
+
+Total number of households recorded in Firebaugh according to ACS 2015-2019: 2321
+Total number of occupied households recorded in Firebaugh according to ACS 2015-2019: 844
+Total number recorded given by FHA: 2033
+```{r pull-ACS-data}
+# housing costs as % of income
+fb_housing_costs <-
+  get_census_tract("B25106") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "income", "% of income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`% of income`))
+
+# HH Income - cbg level
+fb_hhincome <-
+  get_census_bg("B19001") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(income))
+
+# aggregate vehicles available - cbg level
+fb_vehicles <-
+  get_census_bg("B25046") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`tenure`)) %>% 
+  mutate(
+    hh = c(342, 502), # obtained from fb_beds
+    veh_per_hh = estimate / hh
+  ) 
+
+# bedrooms - cbg level
+fb_beds <-
+  get_census_bg("B25042") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "beds"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(beds))
+
+# units per structure - cbg level
+fb_units <-
+  get_census_bg("B25032") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "units"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(units))
+
+# hhsize by units in structure
+fb_units_hhsize <-
+  get_census_tract("B25124") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "HH Size", "units"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(units))
+
+# total pop by units in structure - cbg level
+fb_units_pop <-
+  get_census_bg("B25033") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "units"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(units))
+
+# heating fuel
+fb_fuel <-
+  get_census_tract("B25117") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "fuel"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(fuel))
+
+# computer and internet access by educational attainment - cbg level
+fb_internet_education <- 
+  get_census_bg("B28006") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "education", "computer", "internet"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    internet = ifelse(computer == "No computer", "No computer", internet)
+  ) %>% 
+  filter(!is.na(internet))
+
+# internet access by income - cbg level
+fb_internet_income <- 
+  get_census_bg("B28004") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "income", "internet"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(internet))
+
+```
+
+```{r archived-data, eval = FALSE, include = FALSE}
+# number of rooms aggregated by owner or renter - cbg level
+# redundant with fb_beds
+fb_housing <-
+  get_census_bg("B25022") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`tenure`))
+
+# computer and internet access - cbg level
+# redundant with fb_internet_education
+fb_internet <- 
+  get_census_bg("B28003") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "computer", "internet"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    internet = ifelse(computer == "No computer", "No computer", internet)
+  ) %>% 
+  filter(!is.na(internet))
+
+# HH Income by owner or renter
+# redundant by fb_housing_costs
+fb_hhincome_tenure <-
+  get_census_tract("B25118") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(income))
+```
+
+```{r hhincome-tenure}
+fb_housing_costs %>% 
+  group_by(tract, tenure, income) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  mutate(
+    income =
+      income %>%
+      substr(1, nchar(.) - 1) %>%
+      factor(
+        levels =
+          c("Less than $20,000", "$20,000 to $34,999", "$35,000 to $49,999", "$50,000 to $74,999", "$75,000 or more")
+      )
+  ) %>%
+  ggplot() +
+  geom_bar(
+    aes(
+      x = income,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Household Income",
+    y = "Proportion of Households",
+    title = "Tenure by Household Income",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r hhincome-percincome}
+fb_housing_costs %>% 
+  group_by(tract, `% of income`, income) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  mutate(
+    income =
+      income %>%
+      substr(1, nchar(.) - 1) %>% 
+      factor(
+        levels =
+          c("Less than $20,000", "$20,000 to $34,999", "$35,000 to $49,999", "$50,000 to $74,999", "$75,000 or more")
+      ),
+    `% of income` = `% of income` %>% factor(levels = c("Less than 20 percent", "20 to 29 percent", "30 percent or more"))
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = income,
+      y = estimate,
+      fill = `% of income`
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Household Income",
+    y = "Proportion of Households",
+    title = "Housing Costs as Percent of Income",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Percent of Income"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r hhsize-tenure}
+fb_units_hhsize %>% 
+  group_by(tract, tenure, `HH Size`) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = `HH Size`,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Household Size",
+    y = "Proportion of Households",
+    title = "Tenure by Household Size",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r hhsize-units}
+fb_units_hhsize %>% 
+  group_by(tract, units, `HH Size`) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  mutate(units = ifelse(units == "1, detached  or attached:", "1, detached  or attached", units)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = `HH Size`,
+      y = estimate,
+      fill = units
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Household Size",
+    y = "Proportion of Households",
+    title = "Units in Structure by Household Size",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Total Units in Structure"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r fuel-tenure}
+fb_fuel %>% 
+  group_by(tract, tenure, fuel) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = fuel,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Fuel Source",
+    y = "Proportion of Households",
+    title = "Tenure by Fuel Source",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+Median Income Bracket for the neighborhood is \$30,000 - \$34,999
+Approximate number of vehicles per household for owned-homes: 2.62
+Approximate number of vehicles per household for rented-homes: 0.92
+```{r bedrooms-tenure}
+fb_beds %>% 
+  group_by(block_group, tenure, beds) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = beds,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Number of Bedrooms",
+    y = "Proportion of Households",
+    title = "Tenure by Number of Bedrooms",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r units-tenure-hh}
+fb_units %>% 
+  group_by(block_group, tenure, units) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = units,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Total Units in Structure",
+    y = "Total Households",
+    title = "Tenure by Total Units in Structure",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r units-tenure-population}
+fb_units_pop %>% 
+  group_by(block_group, tenure, units) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = units,
+      y = estimate,
+      fill = tenure
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Total Units in Structure",
+    y = "Total Number of People",
+    title = "Tenure by Total Units in Structure",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Tenure Classification"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r education-internet}
+fb_internet_education %>% 
+  mutate(
+    internet = ifelse(internet == "No computer", "", internet),
+    comp_int = paste(computer, internet)
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education,
+      y = estimate,
+      fill = comp_int
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Educational Attainment",
+    y = "Total Households",
+    title = "Computer and Internet Access by Educational Attainment",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Computer and Internet Access"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r hhincome-internet}
+fb_internet_income %>% 
+  mutate(
+    income =
+      income %>%
+      substr(1, nchar(.) - 1) %>%
+      factor(
+        levels =
+          c("Less than $10,000", "$10,000 to $19,999","$20,000 to $34,999", "$35,000 to $49,999", "$50,000 to $74,999", "$75,000 or more")
+      )
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = income,
+      y = estimate,
+      fill = internet
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Household Income",
+    y = "Total Households",
+    title = "Internet Access by Household Income",
+    subtitle = "ACS 2015-2019 5-YR Estimates",
+    fill = "Internet Access"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+## Land-Use
+```{r map-building-parcel}
+leaflet() %>% 
+  # addTiles(group = "OSM Base Map") %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = fb_parcels,
+    color = "green",
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~APN
+  ) %>% 
+  addPolygons(
+    data = fb_osm_bldg,
+    color = "#e851a2",
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~ID
+  )
+```
+
+```{r}
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+bldg_osm <- 
+  fb_osm_bldg %>% 
+  st_transform(projection)
+
+parcels <-
+  fb_parcels %>% 
+  st_transform(projection)
+
+yards <-
+  parcels %>% 
+  mutate(lot_area = st_area(.)) %>% 
+  arrange(desc(lot_area)) %>% 
+  st_difference(st_union(bldg_osm))
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = yards %>% st_transform(4326),
+    fillColor = "blue",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5
+  )
+```
+
+```{r}
+blocks <-
+  parcels %>% 
+  st_union()
+
+street_edges <-
+  blocks %>% 
+  st_difference(blocks %>% st_buffer(-1)) %>% 
+  st_intersection(parcels, .) %>% 
+  filter(APN %in% yards$APN)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = yards %>% st_transform(4326),
+    fillColor = "yellow",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5
+  ) %>% 
+  addPolygons(
+    data = street_edges %>% st_transform(4326),
+    fillColor = "brown",
+    color = "brown",
+    weight = 2
+  )
+```
+
+```{r}
+bldg_join <-
+  bldg_osm %>% 
+  st_centroid() %>% 
+  st_join(parcels) %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(bldg_osm %>% select(ID)) %>% 
+  st_as_sf()
+
+street_edges_buffered <-
+  1:nrow(street_edges) %>% 
+  map_dfr(function(x){
+    
+    temp_apn <- 
+      street_edges[x,] %>% 
+      pull(APN)
+    
+    temp_bldg <- 
+      bldg_join %>% 
+      filter(APN == temp_apn) %>% 
+      st_union()
+    
+    nearest_distance <- 
+      st_nearest_points(street_edges[x, ], temp_bldg) %>% 
+      st_length()
+    
+    street_edges[x, ] %>% 
+      st_buffer(nearest_distance)
+    
+  })
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = yards %>% 
+      st_transform(4326),
+    fillColor = "yellow",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5
+  ) %>% 
+  addPolygons(
+    data = street_edges_buffered %>% 
+      st_transform(4326),
+    fillColor = "brown",
+    color = "brown",
+    weight = 2
+  )
+```
+
+```{r}
+yards_setbacks <-
+  parcels %>% 
+  mutate(lot_area = st_area(.)) %>% 
+  arrange(desc(lot_area)) %>%  
+  st_buffer(-4) %>% 
+  st_difference(st_union(bldg_osm %>% st_buffer(6))) %>% 
+  st_difference(st_union(street_edges_buffered))
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = yards_setbacks %>% st_transform(4326),
+    fillColor = "blue",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5
+  )
+```
+
+```{r}
+buildable_area <-
+  yards_setbacks %>% 
+  st_buffer(-3.9) %>% 
+  st_buffer(3.9, joinStyle = "BEVEL") %>%
+  filter(!st_is_empty(.)) %>% 
+  st_cast("MULTIPOLYGON") %>% 
+  st_cast("POLYGON") %>% 
+  mutate(
+    buildable_area = st_area(.) %>% as.numeric()
+  ) %>% 
+  filter(buildable_area >= 160)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = yards_setbacks %>% 
+      st_transform(4326),
+    fillColor = "red",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5
+  ) %>% 
+  addPolygons(
+    data = buildable_area %>% 
+      st_transform(4326),
+    fillColor = "green",
+    color = "white",
+    weight = 1,
+    fillOpacity = 1
+  )
+```
+
+```{r}
+buildable_area %>% st_union() %>% st_area()
+```
+
