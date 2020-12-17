@@ -832,7 +832,7 @@ fb_housing_costs %>%
     x = "Household Income",
     y = "Proportion of Households",
     title = "Tenure by Household Income",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Firebaugh (Tract level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -870,7 +870,7 @@ fb_housing_costs %>%
     x = "Household Income",
     y = "Proportion of Households",
     title = "Housing Costs as Percent of Income",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Firebaugh (Tract level)",
     fill = "Percent of Income"
   ) +
   coord_flip() +
@@ -898,7 +898,7 @@ fb_units_hhsize %>%
     x = "Household Size",
     y = "Proportion of Households",
     title = "Tenure by Household Size",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Firebaugh (Tract level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -927,7 +927,7 @@ fb_units_hhsize %>%
     x = "Household Size",
     y = "Proportion of Households",
     title = "Units in Structure by Household Size",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Firebaugh (Tract level)",
     fill = "Total Units in Structure"
   ) +
   coord_flip() +
@@ -955,7 +955,7 @@ fb_fuel %>%
     x = "Fuel Source",
     y = "Proportion of Households",
     title = "Tenure by Fuel Source",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Firebaugh (Tract level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -986,7 +986,7 @@ fb_beds %>%
     x = "Number of Bedrooms",
     y = "Proportion of Households",
     title = "Tenure by Number of Bedrooms",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Specific neighborhood focus (CBG level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -1014,7 +1014,7 @@ fb_units %>%
     x = "Total Units in Structure",
     y = "Total Households",
     title = "Tenure by Total Units in Structure",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Specific neighborhood focus (CBG level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -1042,7 +1042,7 @@ fb_units_pop %>%
     x = "Total Units in Structure",
     y = "Total Number of People",
     title = "Tenure by Total Units in Structure",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Specific neighborhood focus (CBG level)",
     fill = "Tenure Classification"
   ) +
   coord_flip() +
@@ -1072,7 +1072,7 @@ fb_internet_education %>%
     x = "Educational Attainment",
     y = "Total Households",
     title = "Computer and Internet Access by Educational Attainment",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Specific neighborhood focus (CBG level)",
     fill = "Computer and Internet Access"
   ) +
   coord_flip() +
@@ -1107,7 +1107,7 @@ fb_internet_income %>%
     x = "Household Income",
     y = "Total Households",
     title = "Internet Access by Household Income",
-    subtitle = "ACS 2015-2019 5-YR Estimates",
+    subtitle = "Specific neighborhood focus (CBG level)",
     fill = "Internet Access"
   ) +
   coord_flip() +
@@ -1249,8 +1249,8 @@ yards_setbacks <-
   parcels %>% 
   mutate(lot_area = st_area(.)) %>% 
   arrange(desc(lot_area)) %>%  
-  st_buffer(-17) %>% # to account for streets 12 + 5 ft for front yard
-  st_difference(st_union(bldg_osm %>% st_buffer(14))) %>% # according to R-2 zoning design + 4 for parcel boundary
+  st_buffer(-12) %>% # to account for streets 12
+  st_difference(st_union(bldg_osm %>% st_buffer(14))) %>% # 10 according to R-2 zoning design + 4 for parcel boundary
   st_difference(st_union(street_edges_buffered))
 
 leaflet() %>% 
