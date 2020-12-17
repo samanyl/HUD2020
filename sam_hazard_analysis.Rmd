@@ -28,7 +28,69 @@ library(esri2sf)
 Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
 census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
 
+fb_parcels <- readRDS("fb_parcels.rds")
+fb_osm_bldg <- readRDS("fb_osm_bldg.rds")
+
 ```
+```{r ACS-functions}
+acs5_vars <- readRDS("acs5_vars.rds")
+
+get_census_bg <- function(group) {
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*",
+    regionin = "state:06+county:019",
+    vars = paste0("group(", group, ")")
+  ) %>% 
+    mutate(block_group = paste0(state, county, tract, block_group)) %>% 
+    select(
+      !c(GEO_ID, state, county, tract, NAME) & 
+        !ends_with(c("EA", "MA", "M"))
+    ) %>%
+    pivot_longer(
+      ends_with("E"),
+      names_to = "variable",
+      values_to = "estimate"
+    ) %>%
+    left_join(
+      acs5_vars %>% 
+        select(name, label), 
+      by = c("variable" = "name")
+    ) %>% 
+    select(-variable) %>% 
+    filter(block_group == "060190084011")
+}
+
+get_census_tract <- function(group) {
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "tract:*",
+    regionin = "state:06+county:019",
+    vars = paste0("group(", group, ")")
+  ) %>% 
+  mutate(tract = paste0(state, county, tract)) %>%
+  select(
+    !c(GEO_ID, state, county, NAME) & 
+      !ends_with(c("EA", "MA", "M"))
+  ) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs5_vars %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+    filter(tract == "06019008401")
+}
+
+```
+
 ```{r block-groups, include = FALSE}
 fresno_cbgs <- 
   block_groups("CA","Fresno County", cb = T, progress_bar = F) %>% 
@@ -47,12 +109,14 @@ leaflet() %>%
   )
 
 ```
-```{r tracts, include = FALSE}
+```{r tracts, include = FALSE, eval = FALSE}
 fresno_tracts <- 
   tracts("CA","Fresno County", cb = T, progress_bar = F) %>% 
   # filter(GEOID == "06019008401") %>%   # Firebaugh tract
   st_cast("MULTIPOLYGON") %>% 
   st_cast("POLYGON")
+
+saveRDS(fresno_tracts, "fresno_tracts.rds")
 
 leaflet() %>% 
   addProviderTiles(providers$CartoDB.Positron) %>%
@@ -66,15 +130,17 @@ leaflet() %>%
 ```
 
 Building Data obtained from [Geofabrik](http://download.geofabrik.de/) makes many components of OSM available for easy download. After clicking a few levels down, you can find a [NorCal](http://download.geofabrik.de/north-america/us/california/norcal.html) page with a 700MB file for download with [these attributes](http://download.geofabrik.de/osm-data-in-gis-formats-free.pdf). Another option is Microsoft’s AI-generated [building footprints](https://github.com/Microsoft/USBuildingFootprints), which may be more or less accurate than OSM in different places. Their GitHub repo includes links to download the files as GeoJSONs by state, but California is massive, so a nice option is to use [county-level disaggregations](https://drive.google.com/drive/folders/1-XGvS25tQKKQ3HTqWjAfLJ4PaeXJ9yyY) done by [Patty Frontiera](https://dlab.berkeley.edu/blog/leave-only-footprints) at Berkeley. 
-```{r building-parcel, include = FALSE}
-fresno_parcels <- st_read("geographies/Fresno_Parcels_FeaturesToJSO.geojson")
+```{r building-parcel, include = FALSE, eval = FALSE}
+fresno_parcels <- st_read("Fresno_Parcels_FeaturesToJSO.geojson")
 fb_parcels <- 
   fresno_parcels %>% 
   filter(APN %in% paste0("007140", c("13ST", "04ST", "06T", "07ST"))) %>% 
   st_transform(4326)
 
+saveRDS(fb_parcels, "fb_parcels.rds")
+
 # Microsoft AI-generating method
-fresno_osm_bldg <- read_csv("data-raw/ca_06019_footprints.csv")
+fresno_osm_bldg <- read_csv("ca_06019_footprints.csv")
 fb_osm_bldg <- 
   fresno_osm_bldg %>%
   st_as_sf(wkt = "WKT") %>%
@@ -85,11 +151,13 @@ fb_osm_bldg <-
   filter(
     !ID %in% c(100, 78, 30, 23, 102, 27, 95, 89, 46, 94, 41, 67, 68, 61, 114, 7, 35, 86)
   )
+
+saveRDS(fb_osm_bldg, "fb_osm_bldg.rds")
 ```
 
 ```{r archive-building-parcel, include = FALSE, eval = FALSE}
-# osm_bldg <- st_read("G:/Shared drives/SFBI/Data Library/OSM/gis_osm_buildings_a_free_1.shp")
-# saveRDS(osm_bldg, "rds/osm_bldg.rds")
+osm_bldg <- st_read("G:/Shared drives/SFBI/Data Library/OSM/gis_osm_buildings_a_free_1.shp")
+saveRDS(osm_bldg, "osm_bldg.rds")
 
 # Geofabrik method
 osm_bldg <- readRDS("rds/osm_bldg.rds")
@@ -106,7 +174,7 @@ unlink(temp)
 
 ## Hazard Data
 Data Sources: [Cal Adapt](https://cal-adapt.org/)
-```{r test-case}
+```{r test-case, include = FALSE, eval = FALSE}
 projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
 
 test_cbg <- 
@@ -161,7 +229,7 @@ test_exheat %>%
 ```
 
 Row numbers that result in a lexicon error: 46, 62, 108, 109, 134, 220
-```{r}
+```{r, eval = FALSE, include = FALSE}
 exheat_full <- NULL
 
 for(row in 1:nrow(fresno_cbgs)) {
@@ -220,7 +288,7 @@ saveRDS(exheat_full, "rds/exheat_full.rds")
 ```
 
 ```{r}
-exheat_full <- readRDS("rds/exheat_full.rds")
+exheat_full <- readRDS("exheat_full.rds")
 
 exheat_full %>% 
   group_by(year) %>% 
@@ -365,9 +433,8 @@ heat_exp_income <-
   )
 ```
 
-```{r}
-heat_exp_income_stacked <-
-  heat_exp_income %>% 
+```{r stacked-bar-plot}
+heat_exp_income %>% 
   rbind(
     heat_exp_income %>%
       group_by(income) %>%
@@ -398,9 +465,8 @@ heat_exp_income_stacked <-
   )
 ```
 
-```{r}
-heat_exp_income_fill <-
-  heat_exp_income %>% 
+```{r filled-bar-plot}
+heat_exp_income %>% 
   rbind(
     heat_exp_income %>%
       group_by(income) %>%
@@ -432,7 +498,7 @@ heat_exp_income_fill <-
 ```
 
 ## Difference-in-Difference
-```{r, eval = FALSE, inclue = FALSE}
+```{r, eval = FALSE, include = FALSE}
 bay_pumas <- readRDS("geographies/bay_pumas.rds")
 
 pums_transit <- 
@@ -474,7 +540,7 @@ pums_transit_clean <-
   filter(PUMA %in% bay_pumas$PUMACE10)
 ```
 
-```{r, eval = FALSE, inclue = FALSE}
+```{r, eval = FALSE, include = FALSE}
 obs_matrix <-
   pums_transit_clean %>% 
   select(`2015`,`2016`) %>% 
@@ -515,7 +581,7 @@ leaflet() %>%
   )
 ```
 
-```{r, eval = FALSE, inclue = FALSE}
+```{r, eval = FALSE, include = FALSE}
 match_pumas <-
   match[-1,] %>% 
   st_set_geometry(NULL) %>% 
@@ -566,7 +632,7 @@ rbind(
   )
 ```
 
-```{r, eval = FALSE, inclue = FALSE}
+```{r, eval = FALSE, include = FALSE}
 transit_did <-
   match %>% 
   st_set_geometry(NULL) %>% 
@@ -588,65 +654,6 @@ summary(did_reg)
 ```
 
 ## ACS Demographics
-```{r ACS-functions}
-acs5_vars <- readRDS("rds/acs5_vars.rds")
-
-get_census_bg <- function(group) {
-  getCensus(
-    name = "acs/acs5",
-    vintage = 2019,
-    region = "block group:*",
-    regionin = "state:06+county:019",
-    vars = paste0("group(", group, ")")
-  ) %>% 
-    mutate(block_group = paste0(state, county, tract, block_group)) %>% 
-    select(
-      !c(GEO_ID, state, county, tract, NAME) & 
-        !ends_with(c("EA", "MA", "M"))
-    ) %>%
-    pivot_longer(
-      ends_with("E"),
-      names_to = "variable",
-      values_to = "estimate"
-    ) %>%
-    left_join(
-      acs5_vars %>% 
-        select(name, label), 
-      by = c("variable" = "name")
-    ) %>% 
-    select(-variable) %>% 
-    filter(block_group == "060190084011")
-}
-
-get_census_tract <- function(group) {
-  getCensus(
-    name = "acs/acs5",
-    vintage = 2019,
-    region = "tract:*",
-    regionin = "state:06+county:019",
-    vars = paste0("group(", group, ")")
-  ) %>% 
-  mutate(tract = paste0(state, county, tract)) %>%
-  select(
-    !c(GEO_ID, state, county, NAME) & 
-      !ends_with(c("EA", "MA", "M"))
-  ) %>%
-  pivot_longer(
-    ends_with("E"),
-    names_to = "variable",
-    values_to = "estimate"
-  ) %>%
-  left_join(
-    acs5_vars %>% 
-      select(name, label), 
-    by = c("variable" = "name")
-  ) %>% 
-  select(-variable) %>% 
-    filter(tract == "06019008401")
-}
-
-```
-
 Total number of households recorded in Firebaugh according to ACS 2015-2019: 2321
 Total number of occupied households recorded in Firebaugh according to ACS 2015-2019: 844
 Total number recorded given by FHA: 2033
@@ -1131,7 +1138,7 @@ leaflet() %>%
   )
 ```
 
-```{r}
+```{r remove-building}
 projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
 
 bldg_osm <- 
@@ -1159,16 +1166,16 @@ leaflet() %>%
   )
 ```
 
-```{r}
+```{r find-street-edges}
 blocks <-
   parcels %>% 
   st_union()
 
 street_edges <-
   blocks %>% 
-  st_difference(blocks %>% st_buffer(-1)) %>% 
-  st_intersection(parcels, .) %>% 
-  filter(APN %in% yards$APN)
+  st_difference(blocks %>% st_buffer(-5)) %>% # 5 for front yard considerations
+  st_intersection(parcels, .) 
+  # filter(APN %in% yards$APN)
 
 leaflet() %>% 
   addTiles() %>% 
@@ -1187,7 +1194,7 @@ leaflet() %>%
   )
 ```
 
-```{r}
+```{r find-street-buffer}
 bldg_join <-
   bldg_osm %>% 
   st_centroid() %>% 
@@ -1242,8 +1249,8 @@ yards_setbacks <-
   parcels %>% 
   mutate(lot_area = st_area(.)) %>% 
   arrange(desc(lot_area)) %>%  
-  st_buffer(-4) %>% 
-  st_difference(st_union(bldg_osm %>% st_buffer(6))) %>% 
+  st_buffer(-17) %>% # to account for streets 12 + 5 ft for front yard
+  st_difference(st_union(bldg_osm %>% st_buffer(14))) %>% # according to R-2 zoning design + 4 for parcel boundary
   st_difference(st_union(street_edges_buffered))
 
 leaflet() %>% 
@@ -1290,6 +1297,7 @@ leaflet() %>%
   )
 ```
 
+Total Buildable Area:
 ```{r}
 buildable_area %>% st_union() %>% st_area()
 ```
