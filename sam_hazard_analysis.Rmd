@@ -655,8 +655,8 @@ summary(did_reg)
 
 ## ACS Demographics
 Total number of households recorded in Firebaugh according to ACS 2015-2019: 2321
-Total number of occupied households recorded in Firebaugh according to ACS 2015-2019: 844
-Total number recorded given by FHA: 2033
+Total number of households recorded in neighborhood of interest according to ACS 2015-2019: 844
+Total number recorded given by FHA 2020: 2033
 ```{r pull-ACS-data}
 # housing costs as % of income
 fb_housing_costs <-
@@ -765,9 +765,48 @@ fb_internet_income <-
   ) %>% 
   filter(!is.na(internet))
 
+# median hhincome by hhsize
+fb_hhsize <-
+  get_census_tract("B19019") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "HH Size"),
+    sep = "!!"
+  ) 
+
+# hhtype by hhsize - cbg level
+fb_hhtype_hhsize <-
+  get_census_bg("B11016") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "hh type", "hhsize"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`hh type`))
+
+# householder age by income - cbg level
+fb_age <-
+  get_census_bg("B19037") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "age", "income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`age`))
 ```
 
 ```{r archived-data, eval = FALSE, include = FALSE}
+# household type - cbg level
+# redundant with fb_hhtype_hhsize
+fb_hhtype <-
+  get_census_bg("B11001") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "hh type", "1", "2"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(`hh type`))
+
 # number of rooms aggregated by owner or renter - cbg level
 # redundant with fb_beds
 fb_housing <-
@@ -865,6 +904,42 @@ fb_housing_costs %>%
     ),
     stat = "identity",
     position = "fill"
+  ) +
+  labs(
+    x = "Household Income",
+    y = "Proportion of Households",
+    title = "Housing Costs as Percent of Income",
+    subtitle = "Firebaugh (Tract level)",
+    fill = "Percent of Income"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+
+fb_housing_costs %>% 
+  group_by(tract, `% of income`, income) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  mutate(
+    income =
+      income %>%
+      substr(1, nchar(.) - 1) %>% 
+      factor(
+        levels =
+          c("Less than $20,000", "$20,000 to $34,999", "$35,000 to $49,999", "$50,000 to $74,999", "$75,000 or more")
+      ),
+    `% of income` = `% of income` %>% factor(levels = c("Less than 20 percent", "20 to 29 percent", "30 percent or more"))
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = income,
+      y = estimate,
+      fill = `% of income`
+    ),
+    stat = "identity",
+    position = "stack"
   ) +
   labs(
     x = "Household Income",
@@ -1302,3 +1377,101 @@ Total Buildable Area:
 buildable_area %>% st_union() %>% st_area()
 ```
 
+
+
+## Linear Programming
+```{r}
+max_units <- function(units, area, people, b1, b2, b3, b4) {
+  # Set coefficients of the objective function
+  f.obj <- c(1, 1, 1, 1)
+  
+  # Set matrix corresponding to coefficients of constraints by rows
+  # Do not consider the non-negative constraint; it is automatically assumed
+  f.con <- matrix(c(1, 1, 1, 1,
+                    700, 900, 1200, 1500,
+                    2, 4, 6, 8,
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0, 
+                    0, 0, 0, 1
+  ), nrow = 7, byrow = TRUE)
+  
+  # Set inequality signs
+  f.dir <- c("<=",
+             "<=",
+             "<=",
+             "==",
+             ">=",
+             ">=",
+             ">="
+  )
+  
+  # Set right hand side coefficients
+  f.rhs <- c(units,
+             area,
+             people,
+             b1,
+             0.31 * (b2 + b3),
+             0.43 * (b2 + b3),
+             b4
+             
+  )
+  
+  # Final value (z)
+  print(lp("max", f.obj, f.con, f.dir, f.rhs))
+  
+  # Variables final values
+  lp("max", f.obj, f.con, f.dir, f.rhs)$solution
+}
+```
+
+```{r}
+result <- max_units(844, 345080.1, 1469, 73, 19, 294, 14)
+sum(result * c(2, 4, 6, 8))
+```
+
+```{r}
+# Sensitivities
+lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$sens.coef.from
+lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$sens.coef.to
+
+# Dual Values (first dual of the constraints and then dual of the variables)
+# Duals of the constraints and variables are mixed
+lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$duals
+
+# Duals lower and upper limits
+lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$duals.from
+lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$duals.to
+```
+
+## Electric Usage
+```{r}
+electric <- 
+  map_dfr(paste0("Q", 1:4), function(x) {
+    if (x == "Q4") { year <- 2019 } else { year <- 2020 }
+    file <- 
+      read_csv(unzip(paste0("PGE_", year, "_", x, "_ElectricUsageByZip.zip"))) %>% 
+      filter(ZIPCODE == 93622) %>% 
+      filter(CUSTOMERCLASS == "Elec- Residential")
+  })
+```
+
+```{r}
+sum(electric$AVERAGEKWH) * 0.31
+```
+
+## Gas Usage
+```{r}
+gas <- 
+  map_dfr(paste0("Q", 1:4), function(x) {
+    if (x == "Q4") { year <- 2019 } else { year <- 2020 }
+    file <- 
+      read_csv(unzip(paste0("PGE_", year, "_", x, "_GasUsageByZip.zip"))) %>% 
+      filter(ZIPCODE == 93622) %>% 
+      filter(CUSTOMERCLASS == "Gas- Residential")
+  })
+```
+
+```{r}
+sum(gas$AVERAGETHM) * 52.85
+```
