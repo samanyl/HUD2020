@@ -94,7 +94,7 @@ get_census_tract <- function(group) {
 ```{r block-groups, include = FALSE}
 fresno_cbgs <- 
   block_groups("CA","Fresno County", cb = T, progress_bar = F) %>% 
-  filter(GEOID %in% paste0("0601900840", 11:16)) %>%   # Firebaugh block groups
+  # filter(GEOID %in% paste0("0601900840", 11:16)) %>%   # Firebaugh block groups
   st_cast("MULTIPOLYGON") %>% 
   st_cast("POLYGON")
 
@@ -112,7 +112,7 @@ leaflet() %>%
 ```{r tracts, include = FALSE, eval = FALSE}
 fresno_tracts <- 
   tracts("CA","Fresno County", cb = T, progress_bar = F) %>% 
-  filter(GEOID == "06019008401") %>%   # Firebaugh tract
+  # filter(GEOID == "06019008401") %>%   # Firebaugh tract
   st_cast("MULTIPOLYGON") %>% 
   st_cast("POLYGON")
 
