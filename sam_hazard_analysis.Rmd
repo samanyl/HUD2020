@@ -94,7 +94,7 @@ get_census_tract <- function(group) {
 ```{r block-groups, include = FALSE}
 fresno_cbgs <- 
   block_groups("CA","Fresno County", cb = T, progress_bar = F) %>% 
-  # filter(GEOID %in% paste0("0601900840", 11:16)) %>%   # Firebaugh block groups
+  filter(GEOID %in% paste0("0601900840", 11:16)) %>%   # Firebaugh block groups
   st_cast("MULTIPOLYGON") %>% 
   st_cast("POLYGON")
 
@@ -104,7 +104,7 @@ leaflet() %>%
     data = fresno_cbgs,
     color = "#e851a2",
     fillOpacity = 0.5,
-    weight=1,
+    weight = 1,
     label = ~GEOID
   )
 
@@ -112,7 +112,7 @@ leaflet() %>%
 ```{r tracts, include = FALSE, eval = FALSE}
 fresno_tracts <- 
   tracts("CA","Fresno County", cb = T, progress_bar = F) %>% 
-  # filter(GEOID == "06019008401") %>%   # Firebaugh tract
+  filter(GEOID == "06019008401") %>%   # Firebaugh tract
   st_cast("MULTIPOLYGON") %>% 
   st_cast("POLYGON")
 
@@ -131,10 +131,19 @@ leaflet() %>%
 
 Building Data obtained from [Geofabrik](http://download.geofabrik.de/) makes many components of OSM available for easy download. After clicking a few levels down, you can find a [NorCal](http://download.geofabrik.de/north-america/us/california/norcal.html) page with a 700MB file for download with [these attributes](http://download.geofabrik.de/osm-data-in-gis-formats-free.pdf). Another option is Microsoft’s AI-generated [building footprints](https://github.com/Microsoft/USBuildingFootprints), which may be more or less accurate than OSM in different places. Their GitHub repo includes links to download the files as GeoJSONs by state, but California is massive, so a nice option is to use [county-level disaggregations](https://drive.google.com/drive/folders/1-XGvS25tQKKQ3HTqWjAfLJ4PaeXJ9yyY) done by [Patty Frontiera](https://dlab.berkeley.edu/blog/leave-only-footprints) at Berkeley. 
 ```{r building-parcel, include = FALSE, eval = FALSE}
-fresno_parcels <- st_read("Fresno_Parcels_FeaturesToJSO.geojson")
+fresno_parcels <- st_read(unzip("Fresno_Parcels_FeaturesToJSO.zip"))
 fb_parcels <- 
   fresno_parcels %>% 
-  filter(APN %in% paste0("007140", c("13ST", "04ST", "06T", "07ST"))) %>% 
+  # filter(APN %in% paste0("007140", c("13ST", "04ST", "06T", "07ST"))) %>% 
+  filter(
+    APN %in% 
+      c(paste0("0073", c(1101:1121, 1201:1239, 1301:1335, 1401:1411, 2101:2108, 2201:2207), "S"),
+        paste0("00730", c(201:227, 101:117), "S"),
+        paste0("0072", c(9101:9155, 9401:9414, 9201:9218, 9301:9324), "S")
+      )
+  ) %>%
+  # st_transform(st_crs(fresno_cbgs)) %>% 
+  # .[fresno_cbgs %>% filter(GEOID == "060190084015"), ] %>% 
   st_transform(4326)
 
 saveRDS(fb_parcels, "fb_parcels.rds")
@@ -147,10 +156,10 @@ fb_osm_bldg <-
   st_set_crs(4326) %>%
   rename(geometry = WKT) %>%
   .[fb_parcels, ] %>%
-  rowid_to_column("ID") %>%
-  filter(
-    !ID %in% c(100, 78, 30, 23, 102, 27, 95, 89, 46, 94, 41, 67, 68, 61, 114, 7, 35, 86)
-  )
+  rowid_to_column("ID")
+  # filter(
+  #   !ID %in% c(100, 78, 30, 23, 102, 27, 95, 89, 46, 94, 41, 67, 68, 61, 114, 7, 35, 86)
+  # )
 
 saveRDS(fb_osm_bldg, "fb_osm_bldg.rds")
 ```
@@ -1040,6 +1049,16 @@ fb_fuel %>%
   )
 ```
 
+```{r hhincome-hhsize}
+fb_hhsize %>% 
+  select(-tract) %>% 
+  rename("HH Income" = "estimate") %>% 
+  filter(!is.na(`HH Size`)) %>% 
+  knitr::kable() %>%
+  kableExtra::kable_styling()
+
+```
+
 Median Income Bracket for the neighborhood is \$30,000 - \$34,999
 Approximate number of vehicles per household for owned-homes: 2.62
 Approximate number of vehicles per household for rented-homes: 0.92
@@ -1192,6 +1211,81 @@ fb_internet_income %>%
   )
 ```
 
+```{r hhtype-hhsize}
+fb_hhtype_hhsize %>% 
+  filter(!is.na(hhsize)) %>% 
+  group_by(block_group, `hh type`, hhsize) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = hhsize,
+      y = estimate,
+      fill = `hh type`
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Household Size",
+    y = "Total Households",
+    title = "Household Type by Household Size",
+    subtitle = "Specific neighborhood focus (CBG level)",
+    fill = "Household Type"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+
+```{r hhincome-age}
+fb_age %>% 
+  filter(!is.na(income)) %>% 
+  mutate(
+    income = case_when(
+      income %in% c("$10,000 to $14,999","$15,000 to $19,999") ~ "$10,000 to $19,999",
+      income %in% c("$20,000 to $24,999", "$25,000 to $29,999", "$30,000 to $34,999") ~ "$20,000 to $34,999",
+      income %in% c("$35,000 to $39,999","$40,000 to $44,999","$45,000 to $49,999") ~ "$35,000 to $49,999",
+      income %in% c("$50,000 to $59,999","$60,000 to $74,999") ~ "$50,000 to $74,999",
+      income %in% c("$75,000 to $99,999", "$100,000 to $124,999", "$125,000 to $149,999", "$150,000 to $199,999", "$200,000 or more") ~ "$75,000 or more",
+      TRUE ~ income
+    )
+  ) %>% 
+  group_by(block_group, age, income) %>% 
+  summarize(estimate = sum(estimate, na.rm = TRUE)) %>% 
+  mutate(
+    income =
+      income %>%
+      factor(
+        levels =
+          c("Less than $10,000", "$10,000 to $19,999","$20,000 to $34,999", "$35,000 to $49,999", "$50,000 to $74,999", "$75,000 or more")
+      )
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = income,
+      y = estimate,
+      fill = age
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Household Income",
+    y = "Proportion of Households",
+    title = "Householder Age by Household Income",
+    subtitle = "Specific neighborhood focus (CBG level)",
+    fill = "Age of Householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
 ## Land-Use
 ```{r map-building-parcel}
 leaflet() %>% 
@@ -1224,6 +1318,12 @@ parcels <-
   fb_parcels %>% 
   st_transform(projection)
 
+outside_area <- 
+  bldg_osm %>% 
+  mutate(bldg_area = st_area(.)) %>% 
+  arrange(desc(bldg_area)) %>% 
+  st_difference(st_union(parcels))
+
 yards <-
   parcels %>% 
   mutate(lot_area = st_area(.)) %>% 
@@ -1248,9 +1348,9 @@ blocks <-
 
 street_edges <-
   blocks %>% 
-  st_difference(blocks %>% st_buffer(-5)) %>% # 5 for front yard considerations
-  st_intersection(parcels, .) 
-  # filter(APN %in% yards$APN)
+  st_difference(blocks %>% st_buffer(-1)) %>%
+  st_intersection(parcels, .) %>% 
+  filter(APN %in% yards$APN)
 
 leaflet() %>% 
   addTiles() %>% 
@@ -1267,6 +1367,48 @@ leaflet() %>%
     color = "brown",
     weight = 2
   )
+```
+
+```{r test, eval = FALSE, include = FALSE}
+bldg_join <-
+  bldg_osm %>% 
+  st_centroid() %>% 
+  st_join(parcels) %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(bldg_osm %>% select(ID)) %>% 
+  st_as_sf()
+
+temp_street_edge <- street_edges[74,]
+
+temp_apn <- 
+  temp_street_edge %>% 
+  pull(APN)
+    
+temp_bldg <- 
+  bldg_join %>% 
+  filter(APN == temp_apn) %>% 
+  st_union()
+
+nearest_distance <- 
+  st_nearest_points(temp_street_edge, temp_bldg) %>%
+  st_sf()
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = temp_street_edge %>% 
+      st_transform(4326)
+  ) %>% 
+  addPolygons(
+    data = temp_bldg %>% 
+      st_transform(4326)
+  ) %>% 
+  addPolylines(
+    data = nearest_distance %>% 
+      st_transform(4326),
+    color = "red"
+  )
+
 ```
 
 ```{r find-street-buffer}
@@ -1290,6 +1432,8 @@ street_edges_buffered <-
       bldg_join %>% 
       filter(APN == temp_apn) %>% 
       st_union()
+    
+    if (length(temp_bldg) == 0) { return(street_edges[x, ]) }
     
     nearest_distance <- 
       st_nearest_points(street_edges[x, ], temp_bldg) %>% 
@@ -1324,8 +1468,8 @@ yards_setbacks <-
   parcels %>% 
   mutate(lot_area = st_area(.)) %>% 
   arrange(desc(lot_area)) %>%  
-  st_buffer(-12) %>% # to account for streets 12
-  st_difference(st_union(bldg_osm %>% st_buffer(14))) %>% # 10 according to R-2 zoning design + 4 for parcel boundary
+  st_buffer(-4) %>%
+  st_difference(st_union(bldg_osm %>% st_buffer(6))) %>%
   st_difference(st_union(street_edges_buffered))
 
 leaflet() %>% 
@@ -1372,12 +1516,25 @@ leaflet() %>%
   )
 ```
 
-Total Buildable Area:
+Avg Buildable Area per Single-Family DU:
 ```{r}
-buildable_area %>% st_union() %>% st_area()
+avg <- ((buildable_area %>% st_union() %>% st_area()) - (outside_area %>% st_union() %>% st_area())) / nrow(fb_osm_bldg)
+avg
 ```
 
+Scale-up to the entire city of Firebaugh:
+```{r}
+fb_sfdu <-
+  get_census_tract("B25032") %>% 
+  separate(
+    label,
+    into = c(NA, NA, "tenure", "units"),
+    sep = "!!"
+  ) %>% 
+  filter(units == "1, detached")
 
+avg * sum(fb_sfdu$estimate)
+```
 
 ## Linear Programming
 ```{r}
@@ -1430,7 +1587,7 @@ result <- max_units(844, 345080.1, 1469, 73, 19, 294, 14)
 sum(result * c(2, 4, 6, 8))
 ```
 
-```{r}
+```{r, eval = FALSE, include = FALSE}
 # Sensitivities
 lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$sens.coef.from
 lp("max", f.obj, f.con, f.dir, f.rhs, compute.sens=TRUE)$sens.coef.to
@@ -1450,14 +1607,14 @@ electric <-
   map_dfr(paste0("Q", 1:4), function(x) {
     if (x == "Q4") { year <- 2019 } else { year <- 2020 }
     file <- 
-      read_csv(unzip(paste0("PGE_", year, "_", x, "_ElectricUsageByZip.zip"))) %>% 
+      read_csv(paste0("PGE_", year, "_", x, "_ElectricUsageByZip.csv")) %>% 
       filter(ZIPCODE == 93622) %>% 
       filter(CUSTOMERCLASS == "Elec- Residential")
   })
 ```
 
 ```{r}
-sum(electric$AVERAGEKWH) * 0.31
+sum(electric$AVERAGEKWH) * 0.31 
 ```
 
 ## Gas Usage
@@ -1466,7 +1623,7 @@ gas <-
   map_dfr(paste0("Q", 1:4), function(x) {
     if (x == "Q4") { year <- 2019 } else { year <- 2020 }
     file <- 
-      read_csv(unzip(paste0("PGE_", year, "_", x, "_GasUsageByZip.zip"))) %>% 
+      read_csv(paste0("PGE_", year, "_", x, "_GasUsageByZip.csv")) %>% 
       filter(ZIPCODE == 93622) %>% 
       filter(CUSTOMERCLASS == "Gas- Residential")
   })
