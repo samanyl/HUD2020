@@ -962,6 +962,8 @@ fb_housing_costs %>%
     legend.position = "bottom",
     legend.direction = "vertical"
   )
+
+(fb_housing_costs %>% filter(`% of income` == "30 percent or more") %>% pull(estimate) %>% sum()) / sum(fb_housing_costs$estimate)
 ```
 
 ```{r hhsize-tenure}
@@ -1585,6 +1587,45 @@ max_units <- function(units, area, people, b1, b2, b3, b4) {
 ```{r}
 result <- max_units(844, 345080.1, 1469, 73, 19, 294, 14)
 sum(result * c(2, 4, 6, 8))
+```
+
+```{r-ami}
+# Set coefficients of the objective function
+# 6 communities
+f.obj <- c(0.55, 0.5, 0.45, 0.40, 0.35, 0.30)
+
+# Set matrix corresponding to coefficients of constraints by rows
+# Do not consider the non-negative constraint; it is automatically assumed
+f.con <- matrix(c(
+                  
+), nrow = 7, byrow = TRUE)
+
+# Set inequality signs
+f.dir <- c("<=",
+           "<=",
+           "<=",
+           "==",
+           ">=",
+           ">=",
+           ">="
+)
+
+# Set right hand side coefficients
+f.rhs <- c(units,
+           area,
+           people,
+           b1,
+           0.31 * (b2 + b3),
+           0.43 * (b2 + b3),
+           b4
+           
+)
+
+# Final value (z)
+print(lp("max", f.obj, f.con, f.dir, f.rhs))
+
+# Variables final values
+lp("max", f.obj, f.con, f.dir, f.rhs)$solution
 ```
 
 ```{r, eval = FALSE, include = FALSE}
