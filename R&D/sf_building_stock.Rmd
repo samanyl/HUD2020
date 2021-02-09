@@ -148,13 +148,13 @@ results <-
     bldgsqft = sum(bldgsqft),
     shape_area = sum(shape_area),
     avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
-  ) %>% 
-  pivot_longer(
-    cols = c(count, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area, avg_hgt_ft),
-    names_to = "land use"
-  ) %>% 
-  pivot_wider(names_from = landuse) %>% 
-  mutate_if(names(.) != "land use", round)
+  ) 
+  # pivot_longer(
+  #   cols = c(count, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area, avg_hgt_ft),
+  #   names_to = "land use"
+  # ) %>% 
+  # pivot_wider(names_from = landuse) %>% 
+  # mutate_if(names(.) != "land use", round)
 
 knitr::kable(results, format.args = list(big.mark = ","))
 ```
@@ -179,18 +179,50 @@ results <-
     bldgsqft = sum(bldgsqft),
     shape_area = sum(shape_area),
     avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
-  ) %>% 
-  pivot_longer(
-    cols = c(count, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area, avg_hgt_ft),
-    names_to = "planning district"
-  ) %>% 
-  pivot_wider(names_from = pd_no) %>% 
-  mutate_if(names(.) != "planning district", round)
+  ) 
+  # pivot_longer(
+  #   cols = c(count, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area, avg_hgt_ft),
+  #   names_to = "planning district"
+  # ) %>% 
+  # pivot_wider(names_from = pd_no) %>% 
+  # mutate_if(names(.) != "planning district", round)
 
 knitr::kable(results, format.args = list(big.mark = ","))
 
 ```
-```{r}
+```{r zoning}
+results <- 
+  d_bldg_footprint %>% 
+  as.data.frame() %>% 
+  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, zoning_sim, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area) %>% 
+  distinct(objectid, .keep_all = TRUE) %>% 
+  mutate_if(names(.) != "zoning_sim", as.numeric) %>% 
+  group_by(zoning_sim) %>% 
+  summarize(
+    count = n(),
+    med = sum(med),
+    retail = sum(retail),
+    pdr = sum(pdr),
+    visitor = sum(visitor),
+    mips = sum(mips),
+    cie = sum(cie),
+    total_uses = sum(total_uses),
+    resunits = sum(resunits),
+    bldgsqft = sum(bldgsqft),
+    shape_area = sum(shape_area),
+    avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
+  )  
+  # pivot_longer(
+  #   cols = c(count, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area, avg_hgt_ft),
+  #   names_to = "zoning class"
+  # ) %>% 
+  # pivot_wider(names_from = zoning_sim) %>% 
+  # mutate_if(names(.) != "zoning class", round)
+
+knitr::kable(results, format.args = list(big.mark = ","))
+```
+
+```{r additional-calcs}
 
 ```
 
