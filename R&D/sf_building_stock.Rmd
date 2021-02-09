@@ -15,6 +15,10 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(sf)
 library(leaflet)
 library(tidyverse)
+library(tidytransit)
+library(mapboxapi)
+
+mb_token <- "pk.eyJ1Ijoic2FtYW55bCIsImEiOiJjazlocGNvYWgxMHhxM2Rud2pxdzVnMnp2In0.D_j3K9tXiEddHH-8UUkeZQ"
 ```
 
 ```{r load-data, include = FALSE, eval = FALSE}
@@ -22,11 +26,33 @@ geom_land_use <- read_sf("https://data.sfgov.org/api/geospatial/us3s-fp9q?method
 geom_zoning <- read_sf("https://data.sfgov.org/api/geospatial/3i4a-hu95?method=export&format=GeoJSON")
 geom_planning <- read_sf("https://data.sfgov.org/api/geospatial/ttns-6zj3?method=export&format=GeoJSON")
 geom_bldg_footprint <- read_sf("https://data.sfgov.org/api/geospatial/ynuv-fyni?method=export&format=GeoJSON")
+gtfs_sfmta <- read_gtfs("https://gtfs.sfmta.com/transitdata/google_transit.zip")
 
 saveRDS(geom_land_use, "sf_land_use.rds")
 saveRDS(geom_zoning, "sf_zoning.rds")
 saveRDS(geom_planning, "sf_planning.rds")
 saveRDS(geom_bldg_footprint, "sf_bldg_footprint.rds")
+saveRDS(gtfs_sfmta, "gtfs_sfmta.rds")
+```
+
+```{r transit-data, include = FALSE, eval = FALSE}
+gtfs_sfmta <- readRDS("gtfs_sfmta.rds")
+
+stops <- stops_as_sf(gtfs_sfmta$stops)
+map_dfr(stops$geometry, function(x) {
+  mb_isochrone(
+    stops[x, ], 
+    time = c(5), 
+    profile = "walking", 
+    id_column = "stop_id",
+    access_token = mb_token
+  )
+}) %>% 
+  left_join(
+    stops %>% as.data.frame() %>% select(stop_id, stop_name), 
+    by = c("id" = "stop_id")
+  ) %>% 
+  saveRDS("buffer_sfmta.rds")
 ```
 
 ## San Francisco Analysis
@@ -35,9 +61,11 @@ sf_land_use <- readRDS("sf_land_use.rds")
 sf_zoning <- readRDS("sf_zoning.rds")
 sf_planning <- readRDS("sf_planning.rds")
 sf_bldg_footprint <- readRDS("sf_bldg_footprint.rds")
-```
+buffer_sfmta <- readRDS("buffer_sfmta.rds")
+gtfs_sfmta <- readRDS("gtfs_sfmta.rds")
 
-```{r filter-geom}
+stops <- stops_as_sf(gtfs_sfmta$stops)
+
 d <- sf_planning #%>% filter(pd_no == 9)
 d_land_use <- 
   sf_land_use %>% 
@@ -52,7 +80,24 @@ d_zoning <-
 d_bldg_footprint <- 
   st_intersection(st_make_valid(sf_bldg_footprint), st_make_valid(d_zoning)) %>% 
   st_intersection(d_land_use) %>% 
-  st_intersection(st_make_valid(sf_planning))
+  st_intersection(st_make_valid(sf_planning)) %>% 
+  mutate(area_m2 = as.numeric(round(st_area(.)))) %>% 
+  filter(area_m2 > 50) # corresponds to ~540 ft2
+```
+
+```{r color-palette}
+cols <- 
+  c(
+    "#708d81", # olive green
+    "#723d46", # maroon
+    "#e26d5c", # salmon
+    "#4281a4", # steel blue
+    "#f5cb5c", # light yellow
+    "#a78a7f" # taupe
+  )
+
+pal_land_use <- colorFactor(cols, domain = d_bldg_footprint$landuse)
+pal_zoning <- colorFactor(cols, domain = d_bldg_footprint$zoning_sim)
 ```
 
 ```{r plot-geom}
@@ -74,56 +119,55 @@ leaflet() %>%
     group = "Planning Districts"
   ) %>%
   addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "VACANT"),
-    color = "#708d81", # olive green
+    data = d_bldg_footprint,
+    fillColor = ~pal_land_use(landuse),
+    color = ~pal_land_use(landuse),
     fillOpacity = 0.5,
     weight = 1,
     label = ~districtna,
-    group = "Vacant"
+    group = "Land Use"
   ) %>%
   addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "RETAIL/ENT"),
-    color = "#723d46", # maroon
+    data = d_bldg_footprint,
+    fillColor = ~pal_zoning(zoning_sim),
+    color = ~pal_zoning(zoning_sim),
     fillOpacity = 0.5,
     weight = 1,
     label = ~districtna,
-    group = "Retail/Entertainment"
+    group = "Zoning"
   ) %>%
   addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "PDR"),
-    color = "#e26d5c", # salmon
-    fillOpacity = 0.5,
+    data = buffer_sfmta %>% st_union(),
+    color = "#d3d3d3",
+    fillOpacity = 0.6,
     weight = 1,
-    label = ~districtna,
-    group = "Industrial"
+    group = "SFMTA Buffers"
   ) %>%
-  addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "MIPS"),
-    color = "#4281a4", # steel blue
+  addCircleMarkers(
+    data = stops,
+    color = "black",
+    radius = 2,
     fillOpacity = 0.5,
     weight = 1,
-    label = ~districtna,
-    group = "Offices"
+    label = ~stop_name,
+    group = "SFMTA Buffers"
   ) %>%
-  addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "VISITOR"),
-    color = "#f5cb5c", # light yellow
-    fillOpacity = 0.5,
-    weight = 1,
-    label = ~districtna,
-    group = "Hotels/Visitor Services"
+  addLegend(
+    position = 'bottomleft',
+    values = d_bldg_footprint$landuse,
+    pal = pal_land_use,
+    group = "Land Use"
   ) %>%
-  addPolygons(
-    data = d_bldg_footprint %>% filter(landuse == "MIXED"),
-    color = "#a78a7f", # taupe
-    fillOpacity = 0.5,
-    weight = 1,
-    label = ~districtna,
-    group = "Mixed (Non-Residential)"
+  addLegend(
+    position = 'bottomleft',
+    values = d_bldg_footprint$zoning_sim,
+    pal = pal_zoning,
+    group = "Zoning"
   ) %>%
   addLayersControl(
-    overlayGroups = c("Vacant", "Retail/Entertainment", "Industrial", "Offices", "Hotels/Visitor Services", "Mixed (Non-Residential)", "Planning Districts")
-  )
+    overlayGroups = c("Planning Districts", "Land Use", "Zoning", "SFMTA Buffers")
+  ) %>% 
+  hideGroup(c("Zoning", "SFMTA Buffers"))
 
 ```
 
@@ -131,7 +175,7 @@ leaflet() %>%
 results <- 
   d_bldg_footprint %>% 
   as.data.frame() %>% 
-  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, landuse, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area) %>% 
+  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, landuse, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_if(names(.) != "landuse", as.numeric) %>% 
   group_by(landuse) %>% 
@@ -145,8 +189,7 @@ results <-
     cie = sum(cie),
     total_uses = sum(total_uses),
     resunits = sum(resunits),
-    bldgsqft = sum(bldgsqft),
-    shape_area = sum(shape_area),
+    bldg_ft2 = round(sum(area_m2) * 10.764),
     avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
   ) 
   # pivot_longer(
@@ -162,7 +205,7 @@ knitr::kable(results, format.args = list(big.mark = ","))
 results <- 
   d_bldg_footprint %>% 
   as.data.frame() %>% 
-  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, pd_no, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area) %>% 
+  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, pd_no, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_all(as.numeric) %>% 
   group_by(pd_no) %>% 
@@ -176,8 +219,7 @@ results <-
     cie = sum(cie),
     total_uses = sum(total_uses),
     resunits = sum(resunits),
-    bldgsqft = sum(bldgsqft),
-    shape_area = sum(shape_area),
+    bldg_ft2 = round(sum(area_m2) * 10.764),
     avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
   ) 
   # pivot_longer(
@@ -188,13 +230,13 @@ results <-
   # mutate_if(names(.) != "planning district", round)
 
 knitr::kable(results, format.args = list(big.mark = ","))
-
 ```
+
 ```{r zoning}
 results <- 
   d_bldg_footprint %>% 
   as.data.frame() %>% 
-  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, zoning_sim, med, retail, pdr, visitor, mips, cie, total_uses, resunits, bldgsqft, shape_area) %>% 
+  select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, zoning_sim, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_if(names(.) != "zoning_sim", as.numeric) %>% 
   group_by(zoning_sim) %>% 
@@ -208,8 +250,7 @@ results <-
     cie = sum(cie),
     total_uses = sum(total_uses),
     resunits = sum(resunits),
-    bldgsqft = sum(bldgsqft),
-    shape_area = sum(shape_area),
+    bldg_ft2 = round(sum(area_m2) * 10.764),
     avg_hgt_ft = mean(p2010_zmaxn88ft - p2010_zminn88ft, na.rm = TRUE)
   )  
   # pivot_longer(
@@ -221,8 +262,7 @@ results <-
 
 knitr::kable(results, format.args = list(big.mark = ","))
 ```
-
 ```{r additional-calcs}
-
+sum(results$bldg_ft2)
 ```
 
