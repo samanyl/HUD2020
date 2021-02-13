@@ -55,14 +55,37 @@ map_dfr(stops$geometry, function(x) {
   saveRDS("buffer_sfmta.rds")
 ```
 
+```{r usps-data, include = FALSE, eval = FALSE}
+library(ggmap)
+
+# not a free service - API expires May 14, 2021
+register_google(key = "AIzaSyButMqIpsOPTaMqccBCyAJ4rjWwvk9VUqs")
+
+usps_sf <- 
+  read_csv("G:/.shortcut-targets-by-id/1k9m-NVL2mrWxOYf52u2i3BHq8N141hNG/KIT SWITCH/10. REGULATION/C. Vacancy Analysis/san-francisco.csv") %>% 
+  mutate(full_address = paste0(address, ", ", scity, ", CA ", szip))
+
+for(i in 1:nrow(usps_sf)) {
+  result <- geocode(usps_sf$full_address[i], output = "latlona", source = "google")
+  usps_sf$lon[i] <- as.numeric(result[1])
+  usps_sf$lat[i] <- as.numeric(result[2])
+  # usps_sf$geoAddress[i] <- as.character(result[3])
+}
+
+usps_sf %>% 
+  st_as_sf(coords = c(48, 49), crs = 4326) %>% # lon, lat
+  saveRDS("usps_sf.rds")
+```
+
 ## San Francisco Analysis
 ```{r load-geom}
-sf_land_use <- readRDS("sf_land_use.rds")
-sf_zoning <- readRDS("sf_zoning.rds")
-sf_planning <- readRDS("sf_planning.rds")
-sf_bldg_footprint <- readRDS("sf_bldg_footprint.rds")
+sf_land_use <- readRDS("sf_land_use.rds") # last updated Sep 2019
+sf_zoning <- readRDS("sf_zoning.rds") # last updated Feb 2021
+sf_planning <- readRDS("sf_planning.rds") # last updated Sep 2019
+sf_bldg_footprint <- readRDS("sf_bldg_footprint.rds") # last updated Dec 2020
 buffer_sfmta <- readRDS("buffer_sfmta.rds")
 gtfs_sfmta <- readRDS("gtfs_sfmta.rds")
+usps_sf <- readRDS("usps_sf.rds") # last updated Jan 2021?
 
 stops <- stops_as_sf(gtfs_sfmta$stops)
 
@@ -83,6 +106,11 @@ d_bldg_footprint <-
   st_intersection(st_make_valid(sf_planning)) %>% 
   mutate(area_m2 = as.numeric(round(st_area(.)))) %>% 
   filter(area_m2 > 50) # corresponds to ~540 ft2
+
+usps_sf <- 
+  usps_sf %>% 
+  filter(zoning %in% d_bldg_footprint$zoning_sim) %>% 
+  filter(is.na(yearbuilt) | (yearbuilt >= 1960 & yearbuilt < 2005))
 ```
 
 ```{r color-palette}
@@ -98,6 +126,7 @@ cols <-
 
 pal_land_use <- colorFactor(cols, domain = d_bldg_footprint$landuse)
 pal_zoning <- colorFactor(cols, domain = d_bldg_footprint$zoning_sim)
+pal_land_val <- colorNumeric("Spectral", domain = usps_sf %>% filter(!is.na(landval)) %>% pull(landval))
 ```
 
 ```{r plot-geom}
@@ -152,6 +181,15 @@ leaflet() %>%
     label = ~stop_name,
     group = "SFMTA Buffers"
   ) %>%
+  addCircleMarkers(
+    data = usps_sf,
+    color = ~pal_land_val(landval),
+    radius = 2,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0("$", landval),
+    group = "Vacant Lots"
+  ) %>%
   addLegend(
     position = 'bottomleft',
     values = d_bldg_footprint$landuse,
@@ -160,12 +198,18 @@ leaflet() %>%
   ) %>%
   addLegend(
     position = 'bottomleft',
+    values = usps_sf %>% filter(!is.na(landval)) %>% pull(landval),
+    pal = pal_land_val,
+    group = "Vacant Lots"
+  ) %>%
+  addLegend(
+    position = 'bottomleft',
     values = d_bldg_footprint$zoning_sim,
     pal = pal_zoning,
     group = "Zoning"
   ) %>%
   addLayersControl(
-    overlayGroups = c("Planning Districts", "Land Use", "Zoning", "SFMTA Buffers")
+    overlayGroups = c("Planning Districts", "Land Use", "Zoning", "SFMTA Buffers", "Vacant Lots")
   ) %>% 
   hideGroup(c("Zoning", "SFMTA Buffers"))
 
@@ -263,6 +307,14 @@ results <-
 knitr::kable(results, format.args = list(big.mark = ","))
 ```
 ```{r additional-calcs}
+# Total potential ft2
 sum(results$bldg_ft2)
+
+# % of buildings within 5 min of transit
+(st_union(d_bldg_footprint) %>% st_difference(st_union(buffer_sfmta)) %>% st_area()) / 
+  (st_union(d_bldg_footprint) %>% st_area()) * 100
+
+# Count of matched usps and sf data
+nrow(d_bldg_footprint[usps_sf, ])
 ```
 
