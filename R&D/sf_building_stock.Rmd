@@ -107,10 +107,11 @@ d_bldg_footprint <-
   mutate(area_m2 = as.numeric(round(st_area(.)))) %>% 
   filter(area_m2 > 50) # corresponds to ~540 ft2
 
-usps_sf <- 
+d_usps_sf <- 
   usps_sf %>% 
   filter(zoning %in% d_bldg_footprint$zoning_sim) %>% 
-  filter(is.na(yearbuilt) | (yearbuilt >= 1960 & yearbuilt < 2005))
+  filter(is.na(yearbuilt) | (yearbuilt >= 1960 & yearbuilt < 2005)) %>% 
+  sf_bldg_footprint[., ]
 ```
 
 ```{r color-palette}
@@ -181,27 +182,38 @@ leaflet() %>%
     label = ~stop_name,
     group = "SFMTA Buffers"
   ) %>%
-  addCircleMarkers(
-    data = usps_sf,
-    color = ~pal_land_val(landval),
-    radius = 2,
+  addPolygons(
+    data = d_usps_sf,
+    # color = ~pal_land_val(landval),
+    color = "blue",
+    # radius = 2,
     fillOpacity = 0.5,
     weight = 1,
-    label = ~paste0("$", landval),
+    # label = ~paste0("$", landval),
     group = "Vacant Lots"
   ) %>%
+  # addPolygons(
+  #   data = sf_bldg_footprint,
+  #   # color = ~pal_land_val(landval),
+  #   color = "red",
+  #   # radius = 2,
+  #   fillOpacity = 0.5,
+  #   weight = 1,
+  #   # label = ~paste0("$", landval),
+  #   group = "Vacant Lots"
+  # ) %>%
   addLegend(
     position = 'bottomleft',
     values = d_bldg_footprint$landuse,
     pal = pal_land_use,
     group = "Land Use"
   ) %>%
-  addLegend(
-    position = 'bottomleft',
-    values = usps_sf %>% filter(!is.na(landval)) %>% pull(landval),
-    pal = pal_land_val,
-    group = "Vacant Lots"
-  ) %>%
+  # addLegend(
+  #   position = 'bottomleft',
+  #   values = usps_sf %>% filter(!is.na(landval)) %>% pull(landval),
+  #   pal = pal_land_val,
+  #   group = "Vacant Lots"
+  # ) %>%
   addLegend(
     position = 'bottomleft',
     values = d_bldg_footprint$zoning_sim,
@@ -306,6 +318,7 @@ results <-
 
 knitr::kable(results, format.args = list(big.mark = ","))
 ```
+
 ```{r additional-calcs}
 # Total potential ft2
 sum(results$bldg_ft2)
@@ -316,5 +329,8 @@ sum(results$bldg_ft2)
 
 # Count of matched usps and sf data
 nrow(d_bldg_footprint[usps_sf, ])
+
+# Total vacant buildings ft2
+st_area(d_usps_sf)
 ```
 
