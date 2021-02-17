@@ -111,7 +111,15 @@ d_usps_sf <-
   usps_sf %>% 
   filter(zoning %in% d_bldg_footprint$zoning_sim) %>% 
   filter(is.na(yearbuilt) | (yearbuilt >= 1960 & yearbuilt < 2005)) %>% 
-  sf_bldg_footprint[., ]
+  sf_bldg_footprint[., ] %>% 
+  st_make_valid() %>% 
+  st_intersection(st_make_valid(sf_zoning)) %>% 
+  st_intersection(sf_land_use) %>% 
+  st_intersection(st_make_valid(sf_planning)) %>% 
+  mutate(
+    area_m2 = as.numeric(round(st_area(.)))
+  ) %>% 
+  filter(area_m2 > 50) # corresponds to ~540 ft2
 ```
 
 ```{r color-palette}
@@ -122,12 +130,12 @@ cols <-
     "#e26d5c", # salmon
     "#4281a4", # steel blue
     "#f5cb5c", # light yellow
-    "#a78a7f" # taupe
+    "#a78a7f", # taupe
+    "#6d597a" # mauve
   )
 
-pal_land_use <- colorFactor(cols, domain = d_bldg_footprint$landuse)
+pal_land_use <- colorFactor(cols, domain = c(d_bldg_footprint$landuse, d_usps_sf$landuse))
 pal_zoning <- colorFactor(cols, domain = d_bldg_footprint$zoning_sim)
-pal_land_val <- colorNumeric("Spectral", domain = usps_sf %>% filter(!is.na(landval)) %>% pull(landval))
 ```
 
 ```{r plot-geom}
@@ -149,7 +157,7 @@ leaflet() %>%
     group = "Planning Districts"
   ) %>%
   addPolygons(
-    data = d_bldg_footprint,
+    data = d_bldg_footprint %>% filter(!mapblklot %in% d_usps_sf$mapblklot),
     fillColor = ~pal_land_use(landuse),
     color = ~pal_land_use(landuse),
     fillOpacity = 0.5,
@@ -158,7 +166,7 @@ leaflet() %>%
     group = "Land Use"
   ) %>%
   addPolygons(
-    data = d_bldg_footprint,
+    data = d_bldg_footprint %>% filter(!mapblklot %in% d_usps_sf$mapblklot),
     fillColor = ~pal_zoning(zoning_sim),
     color = ~pal_zoning(zoning_sim),
     fillOpacity = 0.5,
@@ -184,53 +192,63 @@ leaflet() %>%
   ) %>%
   addPolygons(
     data = d_usps_sf,
-    # color = ~pal_land_val(landval),
-    color = "blue",
-    # radius = 2,
+    fillColor = ~pal_land_use(landuse),
+    color = ~pal_land_use(landuse),
     fillOpacity = 0.5,
     weight = 1,
-    # label = ~paste0("$", landval),
-    group = "Vacant Lots"
+    label = ~districtna,
+    group = "USPS Land Use"
   ) %>%
-  # addPolygons(
-  #   data = sf_bldg_footprint,
-  #   # color = ~pal_land_val(landval),
-  #   color = "red",
-  #   # radius = 2,
-  #   fillOpacity = 0.5,
-  #   weight = 1,
-  #   # label = ~paste0("$", landval),
-  #   group = "Vacant Lots"
-  # ) %>%
+  addPolygons(
+    data = d_usps_sf,
+    fillColor = ~pal_zoning(zoning_sim),
+    color = ~pal_zoning(zoning_sim),
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~districtna,
+    group = "USPS Zoning"
+  ) %>%
   addLegend(
     position = 'bottomleft',
     values = d_bldg_footprint$landuse,
     pal = pal_land_use,
     group = "Land Use"
   ) %>%
-  # addLegend(
-  #   position = 'bottomleft',
-  #   values = usps_sf %>% filter(!is.na(landval)) %>% pull(landval),
-  #   pal = pal_land_val,
-  #   group = "Vacant Lots"
-  # ) %>%
   addLegend(
     position = 'bottomleft',
     values = d_bldg_footprint$zoning_sim,
     pal = pal_zoning,
     group = "Zoning"
   ) %>%
+  addLegend(
+    position = 'bottomleft',
+    values = d_usps_sf$landuse,
+    pal = pal_land_use,
+    group = "USPS Land Use"
+  ) %>%
+  addLegend(
+    position = 'bottomleft',
+    values = d_usps_sf$zoning_sim,
+    pal = pal_zoning,
+    group = "USPS Zoning"
+  ) %>%
   addLayersControl(
-    overlayGroups = c("Planning Districts", "Land Use", "Zoning", "SFMTA Buffers", "Vacant Lots")
+    overlayGroups = c("Planning Districts", "Land Use", "Zoning", "SFMTA Buffers", "USPS Land Use", "USPS Zoning")
   ) %>% 
-  hideGroup(c("Zoning", "SFMTA Buffers"))
+  hideGroup(c("Zoning", "SFMTA Buffers", "USPS Zoning"))
 
+```
+```{r}
+precompute <- 
+  d_bldg_footprint %>% 
+  filter(!mapblklot %in% d_usps_sf$mapblklot) %>% 
+  as.data.frame() %>% 
+  full_join(d_usps_sf %>% mutate(yrbuilt = as.numeric(yrbuilt))) 
 ```
 
 ```{r table}
 results <- 
-  d_bldg_footprint %>% 
-  as.data.frame() %>% 
+  precompute %>% 
   select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, landuse, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_if(names(.) != "landuse", as.numeric) %>% 
@@ -259,8 +277,7 @@ knitr::kable(results, format.args = list(big.mark = ","))
 ```
 ```{r district}
 results <- 
-  d_bldg_footprint %>% 
-  as.data.frame() %>% 
+  precompute %>% 
   select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, pd_no, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_all(as.numeric) %>% 
@@ -290,8 +307,7 @@ knitr::kable(results, format.args = list(big.mark = ","))
 
 ```{r zoning}
 results <- 
-  d_bldg_footprint %>% 
-  as.data.frame() %>% 
+  precompute %>% 
   select(objectid, p2010_zmaxn88ft, p2010_zminn88ft, zoning_sim, med, retail, pdr, visitor, mips, cie, total_uses, resunits, area_m2) %>% 
   distinct(objectid, .keep_all = TRUE) %>% 
   mutate_if(names(.) != "zoning_sim", as.numeric) %>% 
@@ -320,17 +336,23 @@ knitr::kable(results, format.args = list(big.mark = ","))
 ```
 
 ```{r additional-calcs}
-# Total potential ft2
+# Total potential ft2 (includes usps data)
 sum(results$bldg_ft2)
 
-# % of buildings within 5 min of transit
-(st_union(d_bldg_footprint) %>% st_difference(st_union(buffer_sfmta)) %>% st_area()) / 
-  (st_union(d_bldg_footprint) %>% st_area()) * 100
+# % of buildings outside of 5 min walk of transit
+(st_union(st_as_sf(precompute)) %>% st_difference(st_union(buffer_sfmta)) %>% st_area()) / 
+  (st_union(st_as_sf(precompute)) %>% st_area()) * 100
 
 # Count of matched usps and sf data
-nrow(d_bldg_footprint[usps_sf, ])
+d_usps_sf %>% 
+  filter(mapblklot %in% d_bldg_footprint$mapblklot) %>% 
+  nrow()
 
-# Total vacant buildings ft2
-st_area(d_usps_sf)
+# Corresponding ft2
+d_usps_sf %>% 
+  filter(mapblklot %in% d_bldg_footprint$mapblklot) %>% 
+  st_union() %>% 
+  st_area() %>% 
+  as.numeric() * 10.764
 ```
 
