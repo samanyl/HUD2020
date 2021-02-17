@@ -79,27 +79,25 @@ usps_sf %>%
 
 ## San Francisco Analysis
 ```{r load-geom}
-sf_land_use <- readRDS("sf_land_use.rds") # last updated Sep 2019
-sf_zoning <- readRDS("sf_zoning.rds") # last updated Feb 2021
+sf_land_use <- 
+  readRDS("sf_land_use.rds") %>% # last updated Sep 2019
+  filter(landuse %in% c("VACANT", "RETAIL/ENT", "PDR", "MIPS", "VISITOR", "MIXED", "MISSING DATA")) %>% 
+  mutate(yrbuilt = as.numeric(yrbuilt)) %>% 
+  filter(yrbuilt == 0 | (yrbuilt >= 1960 & yrbuilt < 2005)) # including unknown data
+sf_zoning <- 
+  readRDS("sf_zoning.rds") %>% # last updated Feb 2021
+  filter(gen %in% c("Mixed Use", "Mixed"))  
 sf_planning <- readRDS("sf_planning.rds") # last updated Sep 2019
 sf_bldg_footprint <- readRDS("sf_bldg_footprint.rds") # last updated Dec 2020
 buffer_sfmta <- readRDS("buffer_sfmta.rds")
 gtfs_sfmta <- readRDS("gtfs_sfmta.rds")
-usps_sf <- readRDS("usps_sf.rds") # last updated Jan 2021?
+usps_sf <- readRDS("usps_sf.rds") # last updated Jan 2021
 
 stops <- stops_as_sf(gtfs_sfmta$stops)
 
 d <- sf_planning #%>% filter(pd_no == 9)
-d_land_use <- 
-  sf_land_use %>% 
-  filter(landuse %in% c("VACANT", "RETAIL/ENT", "PDR", "MIPS", "VISITOR", "MIXED")) %>% 
-  mutate(yrbuilt = as.numeric(yrbuilt)) %>% 
-  filter(yrbuilt == 0 | (yrbuilt >= 1960 & yrbuilt < 2005)) %>% # including unknown data
-  .[d, ]
-d_zoning <- 
-  sf_zoning %>% 
-  filter(gen %in% c("Mixed Use", "Mixed")) %>% 
-  .[d, ]
+d_land_use <- sf_land_use #%>% .[d, ]
+d_zoning <- sf_zoning #%>% .[d, ]
 d_bldg_footprint <- 
   st_intersection(st_make_valid(sf_bldg_footprint), st_make_valid(d_zoning)) %>% 
   st_intersection(d_land_use) %>% 
@@ -109,8 +107,6 @@ d_bldg_footprint <-
 
 d_usps_sf <- 
   usps_sf %>% 
-  filter(zoning %in% d_bldg_footprint$zoning_sim) %>% 
-  filter(is.na(yearbuilt) | (yearbuilt >= 1960 & yearbuilt < 2005)) %>% 
   sf_bldg_footprint[., ] %>% 
   st_make_valid() %>% 
   st_intersection(st_make_valid(sf_zoning)) %>% 
@@ -134,7 +130,7 @@ cols <-
     "#6d597a" # mauve
   )
 
-pal_land_use <- colorFactor(cols, domain = c(d_bldg_footprint$landuse, d_usps_sf$landuse))
+pal_land_use <- colorFactor(cols, domain = d_bldg_footprint$landuse)
 pal_zoning <- colorFactor(cols, domain = d_bldg_footprint$zoning_sim)
 ```
 
@@ -344,9 +340,7 @@ sum(results$bldg_ft2)
   (st_union(st_as_sf(precompute)) %>% st_area()) * 100
 
 # Count of matched usps and sf data
-d_usps_sf %>% 
-  filter(mapblklot %in% d_bldg_footprint$mapblklot) %>% 
-  nrow()
+nrow(d_usps_sf)
 
 # Corresponding ft2
 d_usps_sf %>% 
