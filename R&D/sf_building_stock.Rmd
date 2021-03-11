@@ -77,6 +77,28 @@ usps_sf %>%
   saveRDS("usps_sf.rds")
 ```
 
+```{r usps-data, include = FALSE, eval = FALSE}
+library(ggmap)
+
+# not a free service - API expires May 14, 2021
+register_google(key = "AIzaSyButMqIpsOPTaMqccBCyAJ4rjWwvk9VUqs")
+
+usps_sf <- 
+  read_csv("G:/.shortcut-targets-by-id\1k9m-NVL2mrWxOYf52u2i3BHq8N141hNG/KIT SWITCH/3. MARKETING/B. Typology Analysis/San Francisco") %>% 
+  mutate(full_address = paste0(address, ", ", scity, ", CA ", szip))
+
+for(i in 1:nrow(usps_sf)) {
+  result <- geocode(usps_sf$full_address[i], output = "latlona", source = "google")
+  usps_sf$lon[i] <- as.numeric(result[1])
+  usps_sf$lat[i] <- as.numeric(result[2])
+  # usps_sf$geoAddress[i] <- as.character(result[3])
+}
+
+usps_sf %>% 
+  st_as_sf(coords = c(48, 49), crs = 4326) %>% # lon, lat
+  saveRDS("usps_sf.rds")
+```
+
 ## San Francisco Analysis
 ```{r load-geom}
 sf_land_use <- 
