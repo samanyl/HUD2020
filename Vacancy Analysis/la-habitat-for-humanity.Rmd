@@ -1,0 +1,178 @@
+---
+title: "Habitat for Humanity Building Assessment in LA"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(sf)
+library(leaflet)
+library(tidyverse)
+library(tidytransit)
+library(googlesheets4)
+library(mapboxapi)
+library(here) # C:/Users/liusa/github/HUD2020/Vacancy Analysis
+```
+
+```{r first-time, include = FASE, eval = FALSE}
+unzip("data-raw/regrid/la-habitat-for-humanity.zip")
+
+saveRDS(
+  st_read("https://opendata.arcgis.com/datasets/e702f5540ebd45949758fcdb7bd89c25_0.geojson"),
+  "data/us_opp_zones.rds"
+)
+```
+
+I was unable to obtain only Santa Clarita Transit's GTFS, and the following GTFSs need to be downloaded manually:
+  [Baldwin Park Transit](https://transitfeeds.com/p/baldwin-park-transit/1342/latest/download)
+  [Beach Cities Transit](https://www.redondo.org/civicax/filebank/blobdload.aspx?BlobID=33555)
+  [Burbank Bus](https://rideburbankbus.com/gtfs)
+  [Compton Renaissance](https://transitfeeds.com/p/compton-renaissance-transit/1311/latest/download)
+  [Glendale Beeline](https://www.glendaletransit.com/home/showdocument?id=29549)
+  [Glendora Transit Division](https://transitfeeds.com/p/glendora-transportation-division/1340/latest/download)
+  [Huntington Park](https://transitfeeds.com/p/huntington-park-express/1341/latest/download)
+  [LA DOT](https://transitfeeds.com/p/ladot-transit-services/303/latest/download)
+  [Montebello Bus Lines](https://transitfeeds.com/p/montebello-bus-lines/1343/latest/download)
+  [Monterey Park Spirit Bus](https://transitfeeds.com/p/spirit-bus/757/latest/download)
+  [Norwalk Transit System](https://transitfeeds.com/p/norwalk-transit-system/846/latest/download)
+  [Palos Verdes Transit Authority](https://transitfeeds.com/p/palos-verdes-peninsula-transit-authority/603/latest/download)
+  [Pasadena Transit](https://transitfeeds.com/p/pasadena-transit/1053/latest/download)
+  [Torrance Transit](https://transit.torranceca.gov/home/showpublisheddocument/16673/637628966115670000)
+  
+```{r gtfs, eval = FALSE, include = FALSE}
+transit_names <- c(
+  "avta", "culver", "foothill", "gtrans", "metro-bus", "metro-rail", "long-beach", "big-blue", # 8
+  "baldwin-park", "beach", "burbank", "compton", "glendale", "glendora", "huntington", "ladot", "montebello", "monterey", "norwalk", "palos-verdes", "pasadena", "torrance" # 14
+)
+
+# load gtfs files from web
+url_feeds <- c(
+  "https://www.avta.com/userfiles/files/google_transit.zip", # Antelope Valley Transit Authority (AVTA)
+  "https://www.culvercity.org/files/assets/public/documents/information-technology/maps/gtfs_ccbus_08182021.zip", # Culver City Bus
+  "http://foothilltransit.org/gtfs/foothilltransit-ca-us.zip", # Foothill Transit
+  "http://ridegtrans.com/gtfs.zip", # Gardena GTRANS
+  "https://gitlab.com/LACMTA/gtfs_bus/raw/master/gtfs_bus.zip", # LA Metro Bus
+  "https://gitlab.com/LACMTA/gtfs_rail/raw/master/gtfs_rail.zip", # LA Metro Rail
+  "https://lbtransit.box.com/shared/static/aoyeskwmsa9g7pyg78q3xuioi0lgqe4f.zip", # Long Beach Transit
+  "http://gtfs.bigbluebus.com/current.zip" # Santa Monica Big Blue Bus
+)
+names(url_feeds) <- transit_names[1:8]
+gtfs_1 <- lapply(url_feeds, read_gtfs)
+
+# load downloaded gtfs files
+filename_feeds <-
+  paste0(
+    "data-raw/gtfs/",
+    transit_names[9:length(transit_names)],
+    ".zip"
+  )
+names(filename_feeds) <- transit_names[9:length(transit_names)]
+gtfs_2 <- lapply(filename_feeds, read_gtfs)
+
+# combine gtfs files
+gtfs <- c(gtfs_1, gtfs_2)
+
+# extract stops and their geometries
+gtfs_stops <- 
+  lapply(gtfs, function(x){ stops_as_sf(x$stops) }) %>% 
+  map2_dfr(
+    names(.),
+    function(x, y){
+      mutate(x, transit_agency = y)
+    }
+  )
+
+# save file
+saveRDS(gtfs_stops, "data/la_gtfs_stops.rds")
+
+# create 10 minute buffers
+gtfs_stops <- 
+  read_rds("data/la_gtfs_stops.rds") %>% 
+  mb_isochrone(profile = "walking", time = 10)
+
+saveRDS(gtfs_stops, "data/la_stops_buffer.rds")
+```
+
+```{r export-vacant-buildings, include = FALSE, eval = FALSE}
+# exporting unique zoning codes
+vacant_buildings %>% 
+  as.data.frame() %>% 
+  select(zoning, -geometry) %>% 
+  separate(zoning, c("city_short", "zoning"), sep = c(2)) %>% 
+  distinct() %>% 
+  write_csv("unique_zones.csv")
+
+# exporting certain data with speciified zoning
+vacant_buildings %>% 
+  filter(str_detect(zoning, "WDC")) %>% 
+  write_csv("filtered.csv")
+```
+
+```{r}
+# These are vacant buildings in LA that aren't classified as residential according to USPS
+vacant_buildings <- 
+  read_sf("data-raw/regrid/la-habitat-for-humanity.shp") %>% 
+  distinct(.keep_all = TRUE) %>% # there are a couple of duplicates in the data
+  mutate( # manually change APNs
+    zoning = ifelse(parcelnum2 %in% c("5773013015", "5779010003"), "ARMU", zoning), 
+    zoning = ifelse(parcelnum2 %in% c("8517015001"), "MORM", zoning),
+    zoning = ifelse(parcelnum2 %in% c("8508001009", "8506005009", "8508010080"), "MOCD", zoning),
+    zoning = ifelse(parcelnum2 %in% c("5720003003", "5720009011"), "PSIG", zoning),
+    zoning = ifelse(parcelnum2 %in% c("5746005018", "5747005052", "5738016060", "5746025907", "5713040041", "5737002022", "5746009058", "5746005021"), "PSCG", zoning),
+    zoning = ifelse(parcelnum2 %in% c("4283008005", "4282032010", "4282032016", "4268010013", "4268010012"), "SMBCD", zoning),
+    zoning = ifelse(parcelnum2 %in% c("4134002002"), "CCC3E", zoning),
+    zoning = ifelse(parcelnum2 %in% c("8451012054"), "WCRC", zoning),
+    zoning = ifelse(parcelnum2 %in% c("4336024011", "4336009006", "4336007021", "4337008160", "4337011068"), "WDC1", zoning),
+    zoning = ifelse(parcelnum2 %in% c("7378011044"), "TOHC-CTR", zoning),
+    zoning = ifelse(parcelnum2 %in% c("7370001001", "7370001018", "7370002005"), "TOMI-BP", zoning),
+    zoning = ifelse(parcelnum2 %in% c("5286010012"), "MPC1", zoning),
+    zoning = ifelse(parcelnum2 %in% c("5253002021", "5274020019"), "MPC4CD", zoning),
+    zoning = ifelse(parcelnum2 %in% c("3125021038", "3112012041"), "LRC2", zoning),
+    zoning = ifelse(parcelnum2 %in% c("3138018015", "3138018901", "3138018017", "3138018016"), "LRMU", zoning)
+  )
+
+gtfs_stops <- read_rds("data/la_stops_buffer.rds") # Read in transit stops with 10 minute buffers
+  
+opp_zones <- read_rds("data/us_opp_zones.rds") # Read in opportunity zones
+zoning_dict <- 
+  read_sheet("1pQcWYWeKjwRsDb0SogINhXPHaPSOeskDRR6IY2bDM58", sheet = "zoning_code") %>% # read in zoning dictionary
+  filter(allows_residential == "Y") # only want zoning codes that allow multi-family residential units
+
+# Filter the data down to Kit Switch qualifications
+vacant_buildings_ks <- 
+  vacant_buildings %>% 
+  select(-c(parcelnumb, lon, lat)) %>% 
+  filter(zoning %in% zoning_dict$zoning) %>% # zoning that allows residential
+  filter(bd1_baths > 0 | bd2_baths > 0 | bd3_baths > 0 | bd4_baths > 0 | bd5_baths > 0) %>% # bathrooms
+  filter(numunits > 1 | str_detect(address, c("STE", "UNIT", "#"))) # multi-story building
+
+# Filter the Kit Switch qualified data down to those that are nearby transit
+vacant_buildings_ks_transit <- 
+  vacant_buildings_ks %>% 
+  .[gtfs_stops, ]
+
+# Filter the Kit Switch qualified data down to those that are in an opportunity zone
+vacant_buildings_ks_opp <- 
+  vacant_buildings_ks %>% 
+  .[opp_zones, ]
+
+# Visualizing the data
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(data = vacant_buildings_ks, label = ~parcelnum2, group = "All Vacant Parcels") %>%
+  addPolygons(data = vacant_buildings_ks_transit, label = ~parcelnum2, group = "Within 10 min walk from Transit Stop") %>%
+  addPolygons(data = vacant_buildings_ks_opp, label = ~parcelnum2, group = "In Opportunity Zones") %>%
+  # addPolygons(data = gtfs_stops)
+  addLayersControl(
+    overlayGroups = c("All Vacant Parcels", "Within 10 min walk from Transit Stop", "In Opportunity Zones")
+  ) %>% 
+  hideGroup(c("Within 10 min walk from Transit Stop", "In Opportunity Zones"))
+```
+
+```{r export, include = FALSE, eval = FALSE}
+write_csv(vacant_buildings_ks, "output/vacant_buildings_res.csv")
+write_csv(vacant_buildings_ks, "output/vacant_buildings_res_bath.csv")
+write_csv(vacant_buildings_ks, "output/vacant_buildings_res_bath_multi.csv")
+```
+
